@@ -14,6 +14,19 @@ lrs run       [PATH] [--release] [-- ARGS...]
 lrs lsp                            language server on stdio
 ```
 
+## Syntax at a glance
+
+| You write | Meaning |
+|---|---|
+| `namespace Foo { .. }` / `namespace Foo.Bar { .. }` | declare (or reopen) a namespace; declarations merge across files |
+| `include "foo.lrs"` / `include "/graphics/core.lrs"` | add a file (relative to this file / to the project root); top level only |
+| `namespace { .Foo }` | mount: names in `.Foo` are usable in the root without the prefix |
+| `namespace { .Foo; .Bar }` | mount several; on a name clash the first wins |
+| `namespace Foo { .Bar }` | mount `.Bar` into `.Foo` |
+| `.Foo.Bar.baz()` / `.Foo.Bar::new()` | absolute path, always starts with `.` |
+| `.Foo.Bar` (nothing after) | the whole namespace, e.g. `use .Foo.Bar.*;` |
+| `pub` | same as Rust; namespaces and includes need no `pub` |
+
 `PATH` is a project directory or an `.lrs` file. Build with `cargo build --release`; try the demo with
 `cd examples/demo && lrs run .`.
 
@@ -75,9 +88,11 @@ token cannot end an expression (`=`, `(`, `,`, `{`, `->`, `:`, `<`, `&`, `|`, ke
 
 ### Visibility
 
-Exactly like Rust: items are private unless `pub` (or `pub(crate)`); namespaces and includes
-are always visible. Privacy is Rust's module privacy applied to namespaces: a private item is visible
-inside its namespace and in nested namespaces.
+Items are private unless marked `pub` (or `pub(crate)`); namespaces and includes are always
+visible. This is Rust's module privacy applied to namespaces, which is what is implemented today:
+a private item is hidden from code *outside* its namespace, but code inside the same namespace
+(and namespaces nested in it) can still use it. Mounts never import private items.
+See the TODO below for the open question about stricter privacy.
 
 ## How it works
 
@@ -131,6 +146,21 @@ vim.lsp.enable("lrs")
 * Mounts import names, not glob-imported names (`pub use x::*` inside a namespace is not forwarded).
 * LSP completion/definition work on the structure `lrs` knows (namespaces, items, mounts), not on
   types or methods — pair it with rust-analyzer on the generated crate if you need that.
+
+## TODO
+
+* **Privacy semantics (open question).** Today "not `pub`" means Rust's rule: invisible outside the
+  namespace, visible inside it and in nested namespaces. Because several files can contribute to
+  one namespace, a private item in `a.lrs` is currently also visible to `b.lrs` when both declare
+  `namespace Foo`. Decide what private should mean and implement it. Options:
+  1. keep Rust's per-namespace rule (current behaviour);
+  2. **file-private**: a non-`pub` item is only visible in the file that defines it (would need each
+     file's items emitted into a private module and `pub` ones re-exported into the namespace);
+  3. stricter, namespace-private-but-not-inherited: not visible even to nested namespaces.
+* Forward glob imports (`pub use x::*`) through mounts.
+* Export `macro_rules!` macros through mounts and resolve macro-generated names.
+* Hand the generated crate to rust-analyzer so types/methods get completion and navigation.
+* `lrs new` project scaffolding, a syntax-highlighting grammar and an editor extension.
 
 ## Tests
 
