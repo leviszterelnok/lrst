@@ -22,11 +22,8 @@ fn main() {
     println!("lerp: {}", .Utils.Math.lerp(0.0, 10.0, 0.25));
     println!("pi: {:.4}", .Utils.Math.PI);
 
-    // whole-namespace path used in a `use`
-    {
-        use .Utils.Math.*;
-        println!("sq(7) = {}", sqr(7));
-    }
+    // names reached through the root mount `.Utils` need no `use`
+    println!("sq(7) = {}", sqr(7));
 
     // field access after a path item keeps working
     println!("origin x = {}", .Graphics.Core.ORIGIN.x);
