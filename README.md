@@ -24,7 +24,7 @@ lrs lsp                            language server on stdio
 | `namespace { .Foo; .Bar }` | mount several; on a name clash the first wins |
 | `namespace Foo { .Bar }` | mount `.Bar` into `.Foo` |
 | `.Foo.Bar.baz()` / `.Foo.Bar::new()` | absolute path, always starts with `.` |
-| `.Foo.Bar` (nothing after) | the whole namespace as a value path; not importable with `use` (`use .Foo.*;` is an error, use mounts or a Rust path) |
+| `.Foo.Bar` (nothing after) | the whole namespace as a value path |
 | `pub` | same as Rust; namespaces and includes need no `pub` |
 
 `PATH` is a project directory or an `.lrs` file. Build with `cargo build --release`; try the demo with
@@ -86,15 +86,12 @@ fn main() {
 }
 ```
 
-Use `.Geo.Sq` only when the name is ambiguous or you want to be explicit. Namespaces are not
-imported with `use` (`use .Geo.{Sq, Kind as K2};` is an error); mounts replace that.
+Use `.Geo.Sq` only when the name is ambiguous or you want to be explicit.
 
 ### Paths
 
 ```rust
 .Something.Subnamespace.Innerstruct::new()
-use .Utils.Math.*;
-use .Geo.{Sq, Kind as K2};
 let p: .Geo.Pair = ...;      // types, patterns, bounds, impl headers — anywhere a path is allowed
 ```
 
