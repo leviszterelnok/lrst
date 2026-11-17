@@ -1,0 +1,17 @@
+[package]
+name = "lrs"
+version = "0.1.0"
+edition = "2021"
+description = "LRS: a Rust-compatible language with a reworked namespace/include system, transpiled to Rust"
+
+[lib]
+name = "lrs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lrs"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+toml = "0.8"

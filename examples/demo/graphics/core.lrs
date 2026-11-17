@@ -1,0 +1,26 @@
+include "../utils/math.lrs"
+
+namespace Graphics.Core {
+    pub struct Point { pub x: f64, pub y: f64 }
+    pub const ORIGIN: Point = Point { x: 0.0, y: 0.0 };
+
+    pub enum Shape { Circle(f64), Square(f64) }
+
+    impl Shape {
+        pub fn circle(r: f64) -> Shape { Shape::Circle(r) }
+        pub fn square(s: f64) -> Shape { Shape::Square(s) }
+        pub fn name(&self) -> &'static str {
+            match self { Shape::Circle(_) => "circle", Shape::Square(_) => "square" }
+        }
+        pub fn area(&self) -> f64 {
+            match self {
+                Shape::Circle(r) => .Utils.Math.PI * r * r,
+                Shape::Square(s) => s * s,
+            }
+        }
+    }
+}
+
+namespace App.Geometry {
+    pub fn describe() -> String { format!("origin is at ({}, {})", .Graphics.Core.ORIGIN.x, .Graphics.Core.ORIGIN.y) }
+}
