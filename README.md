@@ -24,7 +24,7 @@ lrs lsp                            language server on stdio
 | `namespace { .Foo; .Bar }` | mount several; on a name clash the first wins |
 | `namespace Foo { .Bar }` | mount `.Bar` into `.Foo` |
 | `.Foo.Bar.baz()` / `.Foo.Bar::new()` | absolute path, always starts with `.` |
-| `.Foo.Bar` (nothing after) | the whole namespace, e.g. `use .Foo.Bar.*;` |
+| `.Foo.Bar` (nothing after) | the whole namespace as a value path; not importable with `use` (`use .Foo.*;` is an error, use mounts or a Rust path) |
 | `pub` | same as Rust; namespaces and includes need no `pub` |
 
 `PATH` is a project directory or an `.lrs` file. Build with `cargo build --release`; try the demo with

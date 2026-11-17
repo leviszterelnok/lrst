@@ -200,6 +200,19 @@ impl<'a> Em<'a> {
     fn path(&mut self, fid: usize, dot_t: usize, chain: &[usize], in_use: bool) -> usize {
         let p = self.p;
         let f = &p.files[fid];
+        if in_use {
+            // `use` only accepts Rust paths (crates, std, ...); namespaces are not importable this way
+            let last = *chain.last().expect("non-empty chain");
+            let end = f.tokens[last];
+            self.diags.push(Diag::error(
+                fid,
+                f.tokens[dot_t].start,
+                end.end,
+                "`use` cannot import a namespace (`.Foo`); use a Rust path such as `std::...` or `crate::...`, or mount with `namespace { .Foo }`",
+            ));
+            self.copy(fid, f.tokens[dot_t].start, end.end);
+            return last + 1;
+        }
         let names: Vec<&str> = chain.iter().map(|&i| f.tok(i)).collect();
         let r = resolve_path(p, &names, in_use);
         if let Some((idx, msg, sev)) = &r.problem {

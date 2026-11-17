@@ -78,9 +78,6 @@ namespace Mod.Deep {
     impl<T: .Geo.Area> Wrapper<T> { pub fn go(&self) -> f64 { self.v.area() } }
 }
 
-use .Geo.{Sq, Kind as K2};
-pub use .Geo.id as ident;
-
 struct Mine;
 impl .Geo.Area for Mine { fn area(&self) -> f64 { 2.0 } }
 fn takes<T>(t: T) -> f64 where T: .Geo.Area { t.area() }
@@ -88,14 +85,14 @@ fn describe(k: .Geo.Kind) -> String {
     match k { .Geo.Kind::A(n) => format!("A{}", n), .Geo.Kind::B => "B".into() }
 }
 fn main() {
-    let w = .Mod.Deep.Wrapper { v: Sq(3.0) };
+    let w = .Mod.Deep.Wrapper { v: .Geo.Sq(3.0) };
     println!("{}", w.go());
     println!("{}", takes(Mine));
     println!("{}", describe(.Geo.Kind::A(4)));
     println!("{}", describe(.Geo.K));
     let p: .Geo.Pair = (1, 2);
     println!("{:?} {}", p, .Geo.NAMES[1]);
-    println!("{}", ident(5));
+    println!("{}", .Geo.id(5));
     let f: fn(i32) -> i32 = .Geo.id;
     println!("{}", f(7) + .Geo.id::<i32>(1));
     let c = |x: i32| .Geo.id(x) * 2;
@@ -113,7 +110,7 @@ fn main() {
     struct Local { a: i32 }
     let l = Local { a: .Geo.id(9) };
     println!("{}", l.a);
-    let _ = K2::B;
+    let _ = .Geo.Kind::B;
 }
 "#;
     let dir = project("paths", &[("main.lrs", src)]);
@@ -183,6 +180,18 @@ fn include_rules() {
     let out = lrs(&["check", "main.lrs"], &bad);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("top level"));
+}
+
+#[test]
+fn use_cannot_import_namespace() {
+    // `use` only takes Rust paths; a namespace path there is an error
+    let bad = project(
+        "use-namespace",
+        &[("main.lrs", "namespace Foo { pub fn f() -> i32 { 1 } }\nfn main() { use .Foo.*; f(); }\n")],
+    );
+    let out = lrs(&["check", "main.lrs"], &bad);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot import a namespace"));
 }
 
 #[test]
