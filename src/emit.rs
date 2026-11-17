@@ -352,7 +352,7 @@ impl<'a> Em<'a> {
                 }
             }
             if tok.kind == Kind::Punct && f.tok(t) == "." {
-                if let Some(chain) = scan_path(&f.text, toks, t, b) {
+                if let Some(chain) = scan_path(p, fid, t, b) {
                     t = self.path(fid, t, &chain, in_use);
                     continue;
                 }
@@ -385,6 +385,15 @@ impl<'a> Em<'a> {
         }
         let names: Vec<&str> = chain.iter().map(|&i| f.tok(i)).collect();
         let r = resolve_path(p, &names, in_use, Some(fid));
+        if matches!(r.found.last(), Some(Some(Found::Ns(_)))) && r.consumed == names.len() {
+            let tk = f.tokens[*chain.last().expect("non-empty chain")];
+            self.diags.push(Diag::error(
+                fid,
+                tk.start,
+                tk.end,
+                "a namespace is not a value; name an item inside it, e.g. `.Foo.item`",
+            ));
+        }
         if let Some((idx, msg, sev)) = &r.problem {
             let tk = f.tokens[chain[*idx]];
             self.diags.push(Diag::new(*sev, fid, tk.start, tk.end, msg.clone()));

@@ -77,7 +77,7 @@ fn compute_matching(src: &str, toks: &[Token]) -> (Vec<usize>, Vec<(usize, usize
     (m, errs)
 }
 
-fn add_file(p: &mut Project, path: PathBuf, text: String, overlay: &Overlay) -> usize {
+pub(crate) fn add_file(p: &mut Project, path: PathBuf, text: String, overlay: &Overlay) -> usize {
     let lexed = lex(&text);
     let tokens = lexed.tokens;
     let (matching, merrs) = compute_matching(&text, &tokens);

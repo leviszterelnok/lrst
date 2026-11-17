@@ -296,3 +296,25 @@ namespace Other { pub fn peek() -> i32 { .B.internal_stuff() } }
     assert!(!out.status.success());
     assert!(err.contains("internal_stuff") && err.contains("main.lrs:2:"), "{}", err);
 }
+
+#[test]
+fn snake_case_namespace_after_block() {
+    // blank line before `.` -> namespace path; single newline -> method call (fails to compile)
+    let ok = project(
+        "snake-ok",
+        &[("main.lrs", "namespace my_math { pub fn f() -> i32 { 1 } }\nfn main() {\n    if true { }\n\n    .my_math.f();\n    let v = if true { vec![1, 2] } else { vec![] }\n    .iter()\n    .map(|x| x * 2)\n    .collect::<Vec<_>>();\n}\n")],
+    );
+    let out = lrs(&["check", "main.lrs"], &ok);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn namespace_is_not_a_value() {
+    let bad = project(
+        "ns-value",
+        &[("main.lrs", "namespace Foo { pub fn f() -> i32 { 1 } }\nfn main() { let p = .Foo; }\n")],
+    );
+    let out = lrs(&["check", "main.lrs"], &bad);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("a namespace is not a value"));
+}

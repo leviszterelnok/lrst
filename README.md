@@ -24,7 +24,7 @@ lrs lsp                            language server on stdio
 | `namespace { .Foo; .Bar }` | mount several; on a name clash the first wins |
 | `namespace Foo { .Bar }` | mount `.Bar` into `.Foo` |
 | `.Foo.Bar.baz()` / `.Foo.Bar::new()` | absolute path, always starts with `.` |
-| `.Foo.Bar` (nothing after) | the whole namespace as a value path |
+| `.Foo.Bar` (nothing after) | error: a namespace is not a value |
 | `pub` | same as Rust; namespaces and includes need no `pub` |
 
 `PATH` is a project directory or an `.lrs` file. Build with `cargo build --release`; try the demo with
@@ -95,13 +95,17 @@ Use `.Geo.Sq` only when the name is ambiguous or you want to be explicit.
 let p: .Geo.Pair = ...;      // types, patterns, bounds, impl headers — anywhere a path is allowed
 ```
 
-A path starts with `.`, is absolute from the root, and `.Something.Sub` without anything after it is
-the whole namespace. The path ends at the first item, so `.Config.LIMIT.len()` calls `len` on the
-constant. A `.` begins a path when it cannot be a field or method access, i.e. when the previous
-token cannot end an expression (`=`, `(`, `,`, `{`, `->`, `:`, `<`, `&`, `|`, keywords like
-`return`/`in`/`impl`/`for`/`where`/`use`, …). After `}` only a capitalized segment starts a path, so
-`}\n.map(f)` still chains while `}\n.Foo.bar();` calls into a namespace — name your namespaces in
-`PascalCase` (they are emitted as `pub mod`).
+A path starts with `.` and is absolute from the root. The path ends at the first item, so
+`.Config.LIMIT.len()` calls `len` on the constant. A `.` begins a path when it cannot be a field or
+method access, i.e. when the previous token cannot end an expression (`=`, `(`, `,`, `{`, `->`, `:`,
+`<`, `&`, `|`, keywords like `return`/`in`/`impl`/`for`/`where`/`use`, …).
+
+Namespace names can be any identifier (snake_case included). After a block `}` the `.` is resolved
+by name: `}\n.name` is a namespace path only if `name` is a namespace **and** there is a blank line
+between `}` and `.`. Otherwise it is a method call on the block's value, so a method wins a
+collision. `}\n.map(f)` chains, `}\n\n.my_math.f();` calls into the namespace `my_math`.
+
+A namespace is not a value: `.Foo` on its own is an error, name an item inside it.
 
 ### Visibility
 

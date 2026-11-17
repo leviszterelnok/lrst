@@ -82,7 +82,7 @@ fn resolve_at(a: &Analysis, fid: usize, off: usize) -> Option<Found> {
     }
     let f = &a.project.files[fid];
     let ti = token_at(f, off)?;
-    let (chain, which) = path_containing(&f.text, &f.tokens, ti)?;
+    let (chain, which) = path_containing(&a.project, fid, ti)?;
     let in_use = in_use_stmt(f, chain[0] - 1);
     let names: Vec<&str> = chain.iter().map(|&i| f.tok(i)).collect();
     let r = resolve_path(&a.project, &names, in_use, Some(fid));
@@ -214,7 +214,7 @@ pub fn completion(a: &Analysis, fid: usize, off: usize) -> Vec<Value> {
     if d != ti && f.tokens[d].end != f.tokens[ti].start {
         return vec![];
     }
-    let Some(prev) = chain_before(&f.text, &f.tokens, d) else { return vec![] };
+    let Some(prev) = chain_before(p, fid, d) else { return vec![] };
     let mut cur = 0;
     for &pi in &prev {
         match lookup(p, cur, f.tok(pi), Some(fid)) {

@@ -149,7 +149,9 @@ fn adjacent(toks: &[Token], a: usize, b: usize) -> bool {
 
 /// Decide from the previous token whether a `.` at `i` begins a namespace path
 /// (as opposed to being a field/method access).
-pub fn dot_prev_ok(src: &str, toks: &[Token], i: usize) -> bool {
+pub fn dot_prev_ok(proj: &Project, fid: usize, i: usize) -> bool {
+    let f = &proj.files[fid];
+    let (src, toks) = (f.text.as_str(), f.tokens.as_slice());
     if i == 0 {
         return true;
     }
@@ -161,19 +163,35 @@ pub fn dot_prev_ok(src: &str, toks: &[Token], i: usize) -> bool {
         Kind::Lifetime => true,
         Kind::Punct => match pt {
             ")" | "]" | "?" => false,
-            // after a block, `.Upper` starts a path; `.lower` continues a method chain
-            "}" => toks
-                .get(i + 1)
-                .map_or(false, |n| n.kind == Kind::Ident && text(src, n).chars().next().map_or(false, |c| c.is_uppercase())),
+            // after a block the `.` is ambiguous: see `brace_dot_is_path`
+            "}" => brace_dot_is_path(proj, fid, i),
             _ => true,
         },
     }
 }
 
+/// After a `}`, the `.` at `i` starts a path only if the next identifier names a
+/// namespace (looked up from the root) AND there is a blank line between `}` and `.`.
+/// Otherwise it is a method call on the block's value: a method wins a collision.
+fn brace_dot_is_path(proj: &Project, fid: usize, i: usize) -> bool {
+    let f = &proj.files[fid];
+    let Some(name_tok) = f.tokens.get(i + 1) else { return false };
+    if name_tok.kind != Kind::Ident || !adjacent(&f.tokens, i, i + 1) {
+        return false;
+    }
+    if !matches!(lookup(proj, 0, text(&f.text, name_tok), Some(fid)), Some(Found::Ns(_))) {
+        return false;
+    }
+    let gap = &f.text[f.tokens[i - 1].end..f.tokens[i].start];
+    gap.matches('\n').count() >= 2
+}
+
 /// If a namespace path starts at the `.` token `i`, return the token indices of
 /// its (greedy) identifier chain `.A.b.c`.
-pub fn scan_path(src: &str, toks: &[Token], i: usize, limit: usize) -> Option<Vec<usize>> {
-    if !is_single_dot(src, toks, i) || !dot_prev_ok(src, toks, i) {
+pub fn scan_path(proj: &Project, fid: usize, i: usize, limit: usize) -> Option<Vec<usize>> {
+    let f = &proj.files[fid];
+    let (src, toks) = (f.text.as_str(), f.tokens.as_slice());
+    if !is_single_dot(src, toks, i) || !dot_prev_ok(proj, fid, i) {
         return None;
     }
     let mut segs = vec![];
@@ -196,14 +214,16 @@ pub fn scan_path(src: &str, toks: &[Token], i: usize, limit: usize) -> Option<Ve
 
 /// For a `.` at `d` that is a path start or a separator inside a chain, return
 /// the identifier token indices before it. `None` if it is a field access.
-pub fn chain_before(src: &str, toks: &[Token], d: usize) -> Option<Vec<usize>> {
+pub fn chain_before(proj: &Project, fid: usize, d: usize) -> Option<Vec<usize>> {
+    let f = &proj.files[fid];
+    let (src, toks) = (f.text.as_str(), f.tokens.as_slice());
     let mut segs = vec![];
     let mut j = d;
     loop {
         if !is_single_dot(src, toks, j) {
             return None;
         }
-        if dot_prev_ok(src, toks, j) {
+        if dot_prev_ok(proj, fid, j) {
             return Some(segs);
         }
         if j >= 2
@@ -222,16 +242,18 @@ pub fn chain_before(src: &str, toks: &[Token], d: usize) -> Option<Vec<usize>> {
 
 /// For the identifier token `ti`, find the whole path chain containing it:
 /// (token indices of all segments, index of the segment `ti` is in).
-pub fn path_containing(src: &str, toks: &[Token], ti: usize) -> Option<(Vec<usize>, usize)> {
+pub fn path_containing(proj: &Project, fid: usize, ti: usize) -> Option<(Vec<usize>, usize)> {
+    let f = &proj.files[fid];
+    let (src, toks) = (f.text.as_str(), f.tokens.as_slice());
     if toks.get(ti)?.kind != Kind::Ident || ti == 0 || !is_single_dot(src, toks, ti - 1) || !adjacent(toks, ti - 1, ti) {
         return None;
     }
-    let before = chain_before(src, toks, ti - 1)?;
+    let before = chain_before(proj, fid, ti - 1)?;
     let start_dot = match before.first() {
         Some(&f) => f - 1,
         None => ti - 1,
     };
-    let all = scan_path(src, toks, start_dot, toks.len())?;
+    let all = scan_path(proj, fid, start_dot, toks.len())?;
     Some((all, before.len()))
 }
 
@@ -306,13 +328,16 @@ pub fn resolve_path(p: &Project, names: &[&str], use_mode: bool, from_file: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::lex;
+    use crate::parse::{add_file, Overlay};
+    use std::path::PathBuf;
 
     fn path_at(src: &str, nth_dot: usize) -> Option<Vec<String>> {
-        let toks = lex(src).tokens;
-        let dots: Vec<usize> = (0..toks.len()).filter(|&i| is_single_dot(src, &toks, i)).collect();
+        let mut proj = Project::new(PathBuf::from("/x"), PathBuf::from("/x/main.lrs"));
+        add_file(&mut proj, PathBuf::from("/x/main.lrs"), src.to_string(), &Overlay::new());
+        let toks = &proj.files[0].tokens;
+        let dots: Vec<usize> = (0..toks.len()).filter(|&i| is_single_dot(src, toks, i)).collect();
         let d = dots[nth_dot];
-        scan_path(src, &toks, d, toks.len()).map(|v| v.iter().map(|&i| text(src, &toks[i]).to_string()).collect())
+        scan_path(&proj, 0, d, toks.len()).map(|v| v.iter().map(|&i| text(src, &toks[i]).to_string()).collect())
     }
 
     #[test]
@@ -322,8 +347,19 @@ mod tests {
         assert!(path_at("let x = f().g;", 0).is_none());
         assert_eq!(path_at("fn f() -> .Foo.T {}", 0).unwrap(), ["Foo", "T"]);
         assert!(path_at("v.iter()\n.map(f)", 1).is_none());
-        assert!(path_at("match x { _ => 1 }\n.Foo.f();", 0).is_some());
-        assert!(path_at("match x { _ => 1 }\n.map(f);", 0).is_none());
         assert!(path_at("x.await.foo()", 1).is_none());
+    }
+
+    #[test]
+    fn block_dot_needs_namespace_and_blank_line() {
+        let decl = "namespace my_math { pub fn f() -> i32 { 1 } }\n";
+        let one_nl = format!("{decl}fn main() {{ if c() {{ }}\n.my_math.f(); }}");
+        let blank = format!("{decl}fn main() {{ if c() {{ }}\n\n.my_math.f(); }}");
+        let unknown = format!("{decl}fn main() {{ if c() {{ }}\n\n.other.f(); }}");
+        let chain = format!("{decl}fn main() {{ if c() {{ }}\n.map(f); }}");
+        assert!(path_at(&one_nl, 0).is_none()); // collision with a single newline: method wins
+        assert_eq!(path_at(&blank, 0).unwrap(), ["my_math", "f"]);
+        assert!(path_at(&unknown, 0).is_none());
+        assert!(path_at(&chain, 0).is_none());
     }
 }
