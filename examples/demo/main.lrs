@@ -1,0 +1,52 @@
+include "utils/math.lrs"
+include "/graphics/core.lrs"
+include "utils/math.lrs"   // includes are once-only
+
+// Bring everything from these namespaces into the global namespace.
+// `Shape` exists in both; the first mount wins.
+namespace { .Graphics.Core; .Utils }
+
+// A mount inside a namespace: Shape, Point, ... are usable unqualified inside .App.Geometry
+namespace App.Geometry { .Graphics.Core }
+
+fn main() {
+    // global names through the mounts
+    let c = Shape::circle(2.0);
+    println!("area of {} = {:.2}", c.name(), c.area());
+
+    // explicit, absolute paths
+    let sq = .Graphics.Core.Shape::square(3.0);
+    println!("area of {} = {:.2}", sq.name(), sq.area());
+
+    println!("clamped: {}", clamp(15, 0, 10));
+    println!("lerp: {}", .Utils.Math.lerp(0.0, 10.0, 0.25));
+    println!("pi: {:.4}", .Utils.Math.PI);
+
+    // whole-namespace path used in a `use`
+    {
+        use .Utils.Math.*;
+        println!("sq(7) = {}", sqr(7));
+    }
+
+    // field access after a path item keeps working
+    println!("origin x = {}", .Graphics.Core.ORIGIN.x);
+
+    // method chains on a new line after a block are not mistaken for paths
+    let v: Vec<i32> = (1..=5).collect();
+    let total: i32 = v
+        .iter()
+        .map(|x| .Utils.Math.sqr(*x))
+        .sum();
+    println!("sum of squares = {}", total);
+
+    app_hello();
+}
+
+namespace App {
+    pub fn hello() -> String { format!("hello from {}", "App") }
+}
+
+fn app_hello() {
+    println!("{}", .App.hello());
+    println!("{}", .App.Geometry.describe());
+}
