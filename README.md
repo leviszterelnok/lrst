@@ -69,6 +69,26 @@ Mounts re-export (`pub use`) what they import, so `.Foo.x` works for names mount
 and mounts chain (mounting `.A` also brings what `.A` mounted). A mount only imports what Rust
 privacy allows — private items are importable only from inside the namespace.
 
+You do not have to write the full path every time. Mount the namespace once, then use the names
+directly:
+
+```rust
+namespace Geo {
+    pub struct Sq(pub f64);
+    pub enum Kind { A(i32), B }
+}
+
+namespace { .Geo }            // mount once, in the root
+
+fn main() {
+    let s = Sq(3.0);          // instead of .Geo.Sq(3.0)
+    let k = Kind::B;          // instead of .Geo.Kind::B
+}
+```
+
+Use `.Geo.Sq` only when the name is ambiguous or you want to be explicit. Namespaces are not
+imported with `use` (`use .Geo.{Sq, Kind as K2};` is an error); mounts replace that.
+
 ### Paths
 
 ```rust
