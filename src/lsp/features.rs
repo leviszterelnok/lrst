@@ -85,7 +85,7 @@ fn resolve_at(a: &Analysis, fid: usize, off: usize) -> Option<Found> {
     let (chain, which) = path_containing(&f.text, &f.tokens, ti)?;
     let in_use = in_use_stmt(f, chain[0] - 1);
     let names: Vec<&str> = chain.iter().map(|&i| f.tok(i)).collect();
-    let r = resolve_path(&a.project, &names, in_use);
+    let r = resolve_path(&a.project, &names, in_use, Some(fid));
     r.found.get(which).copied().flatten()
 }
 
@@ -100,7 +100,7 @@ pub fn definition(a: &Analysis, fid: usize, off: usize) -> Vec<Value> {
     }
     match resolve_at(a, fid, off) {
         Some(Found::Ns(id)) => p.nss[id].decls.iter().map(|d| location(a, d.file, d.name_start, d.name_end)).collect(),
-        Some(Found::Item(ns, i)) => {
+        Some(Found::Item(ns, i) | Found::Hidden(ns, i)) => {
             let it = &p.nss[ns].items[i];
             let f = &p.files[it.file];
             let t = it.name_tok.unwrap_or(it.head);
@@ -161,7 +161,7 @@ pub fn hover(a: &Analysis, fid: usize, off: usize) -> Option<Value> {
                 files.join(", ")
             )
         }
-        Found::Item(ns, i) => {
+        Found::Item(ns, i) | Found::Hidden(ns, i) => {
             let it = &p.nss[ns].items[i];
             let f = &p.files[it.file];
             let mut s = format!("```rust\n{}\n```\n", signature(f, it));
@@ -217,17 +217,17 @@ pub fn completion(a: &Analysis, fid: usize, off: usize) -> Vec<Value> {
     let Some(prev) = chain_before(&f.text, &f.tokens, d) else { return vec![] };
     let mut cur = 0;
     for &pi in &prev {
-        match lookup(p, cur, f.tok(pi)) {
+        match lookup(p, cur, f.tok(pi), Some(fid)) {
             Some(Found::Ns(id)) => cur = id,
             _ => return vec![], // an item: this is a field access, not a path
         }
     }
-    visible_names(p, cur, 0)
+    visible_names(p, cur, Some(fid))
         .into_iter()
         .map(|(name, _)| {
-            let (kind, detail) = match lookup(p, cur, &name) {
+            let (kind, detail) = match lookup(p, cur, &name, Some(fid)) {
                 Some(Found::Ns(_)) => (9, "namespace".to_string()),
-                Some(Found::Item(ns, idx)) => {
+                Some(Found::Item(ns, idx) | Found::Hidden(ns, idx)) => {
                     let it = &p.nss[ns].items[idx];
                     (item_kind(&it.kind), it.kind.clone())
                 }

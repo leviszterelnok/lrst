@@ -89,16 +89,36 @@ token cannot end an expression (`=`, `(`, `,`, `{`, `->`, `:`, `<`, `&`, `|`, ke
 ### Visibility
 
 Items are private unless marked `pub` (or `pub(crate)`); namespaces and includes are always
-visible. This is Rust's module privacy applied to namespaces, which is what is implemented today:
-a private item is hidden from code *outside* its namespace, but code inside the same namespace
-(and namespaces nested in it) can still use it. Mounts never import private items.
-See the TODO below for the open question about stricter privacy.
+visible. **Private means private to the file that defines it**, even when other files contribute to
+the same namespace:
+
+```rust
+// b.lrs
+namespace B {
+    fn internal_stuff() {}          // only code in b.lrs can use this
+    pub fn public_stuff() {}
+}
+
+// a.lrs
+include "b.lrs"
+namespace B {
+    // public_stuff() is usable here, internal_stuff() is NOT (error), not even by .B.internal_stuff()
+}
+```
+
+Inside the defining file a private item is usable from every namespace of that file (by path:
+`.B.internal_stuff()` from `namespace Other` in the same file). Two files may each have their own
+private item with the same name. Mounts only import public items. Struct fields keep Rust's rule
+(private to the module the struct is defined in).
 
 ## How it works
 
 1. A Rust-aware lexer feeds a top-level parser that only understands `namespace`, `include`, mount
    lists and item boundaries (items are otherwise opaque — which is what keeps Rust compatibility).
-2. All files are merged into a namespace tree. Each namespace becomes `pub mod`, mounts become
+2. All files are merged into a namespace tree. Each namespace becomes a `pub mod` that re-exports the
+   *public* items of every file (the canonical tree, `crate::Foo::Bar`); each file's real items live in a
+   hidden per-file module tree (`crate::__lrs_f0::Foo::Bar`) and non-`pub` items get `pub(in <that file module>)`, which is
+   what makes them file-private. Mounts become
    explicit `use` lists computed at transpile time (so "first wins" works), and `.A.b` paths are
    rewritten to `crate::A::b`. Everything else is copied byte for byte.
 3. A source map ties every output byte to its `.lrs` origin, used for rustc diagnostics and the LSP.
@@ -149,14 +169,10 @@ vim.lsp.enable("lrs")
 
 ## TODO
 
-* **Privacy semantics (open question).** Today "not `pub`" means Rust's rule: invisible outside the
-  namespace, visible inside it and in nested namespaces. Because several files can contribute to
-  one namespace, a private item in `a.lrs` is currently also visible to `b.lrs` when both declare
-  `namespace Foo`. Decide what private should mean and implement it. Options:
-  1. keep Rust's per-namespace rule (current behaviour);
-  2. **file-private**: a non-`pub` item is only visible in the file that defines it (would need each
-     file's items emitted into a private module and `pub` ones re-exported into the namespace);
-  3. stricter, namespace-private-but-not-inherited: not visible even to nested namespaces.
+* Privacy variants: a stricter `private` that is not even visible to namespaces nested in the same
+  file, and `pub(file)`-style visibility are not implemented (non-`pub` = file-private only).
+* Private items of the defining file cannot be mounted into other namespaces of that file
+  (mounts import public names only).
 * Forward glob imports (`pub use x::*`) through mounts.
 * Export `macro_rules!` macros through mounts and resolve macro-generated names.
 * Hand the generated crate to rust-analyzer so types/methods get completion and navigation.
