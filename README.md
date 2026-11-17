@@ -101,9 +101,14 @@ method access, i.e. when the previous token cannot end an expression (`=`, `(`, 
 `<`, `&`, `|`, keywords like `return`/`in`/`impl`/`for`/`where`/`use`, …).
 
 Namespace names can be any identifier (snake_case included). After a block `}` the `.` is resolved
-by name: `}\n.name` is a namespace path only if `name` is a namespace **and** there is a blank line
-between `}` and `.`. Otherwise it is a method call on the block's value, so a method wins a
-collision. `}\n.map(f)` chains, `}\n\n.my_math.f();` calls into the namespace `my_math`.
+by the name that follows it:
+
+* only a namespace of that name exists: namespace path;
+* only a method of that name exists (a `fn` with `self` in the project): method call;
+* both exist (collision): with one newline or none between `}` and `.` the method wins; with two
+  or more newlines (a blank line) the namespace wins.
+
+`}\n.map(f)` chains; `}\n\n.my_math.f();` calls into the namespace `my_math`.
 
 A namespace is not a value: `.Foo` on its own is an error, name an item inside it.
 

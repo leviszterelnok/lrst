@@ -170,20 +170,42 @@ pub fn dot_prev_ok(proj: &Project, fid: usize, i: usize) -> bool {
     }
 }
 
-/// After a `}`, the `.` at `i` starts a path only if the next identifier names a
-/// namespace (looked up from the root) AND there is a blank line between `}` and `.`.
-/// Otherwise it is a method call on the block's value: a method wins a collision.
+/// After a `}`, the `.` at `i` is resolved by the name after it:
+/// * only a namespace of that name exists -> namespace path;
+/// * only a method of that name exists -> method call;
+/// * both (collision) -> with 0 or 1 newline before the `.` the method wins;
+///   with 2 or more newlines the namespace wins.
 fn brace_dot_is_path(proj: &Project, fid: usize, i: usize) -> bool {
     let f = &proj.files[fid];
     let Some(name_tok) = f.tokens.get(i + 1) else { return false };
     if name_tok.kind != Kind::Ident || !adjacent(&f.tokens, i, i + 1) {
         return false;
     }
-    if !matches!(lookup(proj, 0, text(&f.text, name_tok), Some(fid)), Some(Found::Ns(_))) {
+    let name = text(&f.text, name_tok);
+    if !matches!(lookup(proj, 0, name, Some(fid)), Some(Found::Ns(_))) {
         return false;
+    }
+    if !declares_method(proj, name) {
+        return true;
     }
     let gap = &f.text[f.tokens[i - 1].end..f.tokens[i].start];
     gap.matches('\n').count() >= 2
+}
+
+/// Whether the project declares a method (a `fn` with a `self` receiver) called `name`.
+fn declares_method(proj: &Project, name: &str) -> bool {
+    proj.files.iter().any(|f| {
+        (0..f.tokens.len()).any(|k| {
+            if f.tok(k) != "fn" || f.tok(k + 1) != name || f.tok(k + 2) != "(" {
+                return false;
+            }
+            let mut m = k + 3;
+            while matches!(f.tok(m), "&" | "mut") || f.tokens.get(m).map_or(false, |t| t.kind == Kind::Lifetime) {
+                m += 1;
+            }
+            f.tok(m) == "self"
+        })
+    })
 }
 
 /// If a namespace path starts at the `.` token `i`, return the token indices of
@@ -351,15 +373,21 @@ mod tests {
     }
 
     #[test]
-    fn block_dot_needs_namespace_and_blank_line() {
+    fn block_dot_rule() {
         let decl = "namespace my_math { pub fn f() -> i32 { 1 } }\n";
-        let one_nl = format!("{decl}fn main() {{ if c() {{ }}\n.my_math.f(); }}");
-        let blank = format!("{decl}fn main() {{ if c() {{ }}\n\n.my_math.f(); }}");
-        let unknown = format!("{decl}fn main() {{ if c() {{ }}\n\n.other.f(); }}");
+        let method = "impl S { fn my_math(&self) {} }\n";
+        let ns_only_one = format!("{decl}fn main() {{ if c() {{ }}\n.my_math.f(); }}");
+        let ns_only_two = format!("{decl}fn main() {{ if c() {{ }}\n\n.my_math.f(); }}");
+        let both_one = format!("{decl}{method}fn main() {{ if c() {{ }}\n.my_math.f(); }}");
+        let both_two = format!("{decl}{method}fn main() {{ if c() {{ }}\n\n.my_math.f(); }}");
+        let not_ns = format!("{decl}fn main() {{ if c() {{ }}\n\n.other.f(); }}");
         let chain = format!("{decl}fn main() {{ if c() {{ }}\n.map(f); }}");
-        assert!(path_at(&one_nl, 0).is_none()); // collision with a single newline: method wins
-        assert_eq!(path_at(&blank, 0).unwrap(), ["my_math", "f"]);
-        assert!(path_at(&unknown, 0).is_none());
+        let ok = ["my_math", "f"];
+        assert_eq!(path_at(&ns_only_one, 0).unwrap(), ok); // only a namespace
+        assert_eq!(path_at(&ns_only_two, 0).unwrap(), ok);
+        assert!(path_at(&both_one, 0).is_none()); // collision, 1 newline: method
+        assert_eq!(path_at(&both_two, 0).unwrap(), ok); // collision, blank line: namespace
+        assert!(path_at(&not_ns, 0).is_none()); // no such namespace: method
         assert!(path_at(&chain, 0).is_none());
     }
 }
