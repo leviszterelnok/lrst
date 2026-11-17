@@ -57,7 +57,16 @@ fn main() { println!("{}", g(vec![1])); inner::h(); let _ = m!("ab"); }
     let dir = project("plain", &[("main.lrs", src)]);
     let out = lrs(&["transpile", "main.lrs"], &dir);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(norm(&String::from_utf8_lossy(&out.stdout)), norm(src));
+    let code = norm(&String::from_utf8_lossy(&out.stdout));
+    // the crate-level attribute is hoisted; the items sit inside the file's hidden module
+    let body = norm(src.split_once("#![allow(dead_code)]").unwrap().1);
+    let (before_main, main_fn) = body.split_once("fn main").unwrap();
+    assert!(code.starts_with("#![allow(dead_code)]"), "{}", code);
+    assert!(code.contains(before_main.trim()), "items must be copied token for token");
+    assert!(code.contains(&format!("pub(crate) fn main{}", main_fn)), "main is exported crate-wide");
+    // and it is still a valid, compiling Rust program
+    let out = lrs(&["check", "main.lrs"], &dir);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
@@ -232,4 +241,58 @@ fn main() {
     let out = lrs(&["run", "main.lrs"], &dir);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n11\n");
+}
+
+#[test]
+fn private_items_are_file_private() {
+    let files = [
+        (
+            "main.lrs",
+            r#"
+include "b.lrs"
+include "c.lrs"
+namespace B { pub fn from_main() -> i32 { public_stuff() + 1 } }   // pub item of another file, unqualified
+fn main() {
+    println!("{}", .B.public_stuff());
+    println!("{}", .B.from_main());
+    println!("{}", .Other.peek());
+    println!("{}", .B.c_view());
+}
+"#,
+        ),
+        (
+            "b.lrs",
+            r#"
+namespace B {
+    fn internal_stuff() -> i32 { 40 }
+    fn same_name() -> i32 { 1 }
+    pub fn public_stuff() -> i32 { internal_stuff() + 2 + same_name() - 1 }
+}
+// another namespace in the same file may use the file's private items by path
+namespace Other { pub fn peek() -> i32 { .B.internal_stuff() } }
+"#,
+        ),
+        ("c.lrs", "namespace B { fn same_name() -> i32 { 7 } pub fn c_view() -> i32 { same_name() } }\n"),
+    ];
+    let dir = project("file-private", &files);
+    let out = lrs(&["run", "main.lrs"], &dir);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n43\n40\n7\n");
+
+    // by path from another file: rejected with an explanation
+    let b = "namespace B { fn internal_stuff() {} pub fn ok() {} }\n";
+    let dir = project("file-private-path", &[("main.lrs", "include \"b.lrs\"\nfn main() { .B.ok(); .B.internal_stuff(); }\n"), ("b.lrs", b)]);
+    let out = lrs(&["check", "main.lrs"], &dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("`internal_stuff` is private to b.lrs"), "{}", err);
+    assert!(err.contains("main.lrs:2:"), "{}", err);
+
+    // unqualified, from the same namespace in another file: rustc rejects it, mapped to main.lrs
+    let main = "include \"b.lrs\"\nnamespace B { pub fn x() -> i32 { internal_stuff() } }\nfn main() { .B.x(); }\n";
+    let dir = project("file-private-unq", &[("main.lrs", main), ("b.lrs", b)]);
+    let out = lrs(&["check", "main.lrs"], &dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("internal_stuff") && err.contains("main.lrs:2:"), "{}", err);
 }
