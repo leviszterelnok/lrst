@@ -150,8 +150,10 @@ serde = "1"
 
 * diagnostics: include/namespace/mount errors as you type; rustc errors (mapped back to `.lrs`) on save
 * go to definition: paths, `namespace A.B` segments, mount lists, `include "…"` strings
-* hover (signature, doc comments, namespace summary), `.`-completion of namespaces and items,
-  document symbols
+* hover (signature, doc comments, namespace summary), document symbols
+* completion: after `.`, namespaces and items of the `.lrs` tree; everywhere else, rust-analyzer's own
+  completion on the generated crate (locals, fields, methods, std, types), mapped back to `.lrs`.
+  rust-analyzer is taken from `PATH`, otherwise downloaded once into `~/.cache/lrs/` (pinned release, see `RA_TAG`).
 
 Editor setup — any LSP client, e.g. Neovim:
 
@@ -170,8 +172,9 @@ vim.lsp.enable("lrs")
 * Names produced by macros are unknown to `lrs`: `.Ns.generated_name` resolves with a warning
   (rustc has the final say), and `macro_rules!` macros are not exported through mounts.
 * Mounts import names, not glob-imported names (`pub use x::*` inside a namespace is not forwarded).
-* LSP completion/definition work on the structure `lrs` knows (namespaces, items, mounts), not on
-  types or methods — pair it with rust-analyzer on the generated crate if you need that.
+* The first Rust completion in a project starts rust-analyzer and waits for its initial indexing (can take a while).
+  Edits that rust-analyzer would add elsewhere in the file (auto-`use` in the generated glue) are dropped.
+* Completion inside generated glue (namespace headers, mounts, `.A.b` paths in code) has no Rust answer.
 
 ## TODO
 
@@ -179,7 +182,6 @@ vim.lsp.enable("lrs")
   (mounts import public names only).
 * Forward glob imports (`pub use x::*`) through mounts.
 * Export `macro_rules!` macros through mounts and resolve macro-generated names.
-* Hand the generated crate to rust-analyzer so types/methods get completion and navigation.
 * `lrs new` project scaffolding, a syntax-highlighting grammar and an editor extension.
 
 ## Tests

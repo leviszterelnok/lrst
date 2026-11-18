@@ -6,8 +6,12 @@
 //! and items, and document symbols.
 
 mod features;
+mod ra;
+mod rust_completion;
 
 use crate::driver::*;
+use ra::Ra;
+use rust_completion::ItemStore;
 use crate::model::*;
 use crate::parse::{normalize, Overlay};
 use serde_json::{json, Value};
@@ -111,6 +115,19 @@ struct Server {
     cargo_rerun: HashSet<PathBuf>,
     published: HashSet<String>,
     shutdown: bool,
+    /// entry path -> rust-analyzer on its generated crate
+    ra_sessions: HashMap<PathBuf, RaSession>,
+    store: Arc<ItemStore>,
+}
+
+/// One rust-analyzer instance and the analysis it was last given.
+struct RaSession {
+    ra: Ra,
+    synced: Option<Arc<Analysis>>,
+}
+
+fn respond(id: Value, result: Value) {
+    send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
 }
 
 fn send(v: &Value) {
@@ -269,7 +286,7 @@ impl Server {
                         "textDocumentSync": {"openClose": true, "change": 1, "save": {"includeText": false}},
                         "definitionProvider": true,
                         "hoverProvider": true,
-                        "completionProvider": {"triggerCharacters": ["."]},
+                        "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": true},
                         "documentSymbolProvider": true
                     },
                     "serverInfo": {"name": "lrs", "version": env!("CARGO_PKG_VERSION")}
@@ -313,7 +330,9 @@ impl Server {
                     self.publish_all();
                 }
             }
-            (m @ ("textDocument/definition" | "textDocument/hover" | "textDocument/completion" | "textDocument/documentSymbol"), Some(id)) => {
+            ("textDocument/completion", Some(id)) => self.complete(id, params),
+            ("completionItem/resolve", Some(id)) => self.resolve(id, params),
+            (m @ ("textDocument/definition" | "textDocument/hover" | "textDocument/documentSymbol"), Some(id)) => {
                 let result = self.query(m, params).unwrap_or(Value::Null);
                 send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
             }
@@ -323,6 +342,55 @@ impl Server {
             _ => {}
         }
         true
+    }
+
+    /// Completion: `.lrs` namespace paths come from the namespace tree; everywhere else
+    /// that maps into the generated Rust, rust-analyzer answers (asynchronously).
+    fn complete(&mut self, id: Value, params: &Value) {
+        let empty = json!({"isIncomplete": false, "items": []});
+        let Some(path) = params["textDocument"]["uri"].as_str().and_then(uri_to_path).map(|p| normalize(&p)) else {
+            return respond(id, empty);
+        };
+        let Some(a) = self.analysis_for(&path) else { return respond(id, empty) };
+        let Some(fid) = a.project.file_index(&path) else { return respond(id, empty) };
+        let off = {
+            let f = &a.project.files[fid];
+            let p = &params["position"];
+            f.lines.offset(&f.text, p["line"].as_u64().unwrap_or(0) as u32, p["character"].as_u64().unwrap_or(0) as u32)
+        };
+        let lrs_items = features::completion(&a, fid, off);
+        if !lrs_items.is_empty() {
+            return respond(id, json!({"isIncomplete": false, "items": lrs_items}));
+        }
+        let Some(gen_off) = rust_completion::lrs_to_gen(&a, fid, off) else { return respond(id, empty) };
+        // only projects have a generated crate; a loose file gets the LRS answer only
+        let Some(cfg) = path.parent().and_then(find_config_dir).and_then(|cd| find_project(&cd).ok()) else {
+            return respond(id, empty);
+        };
+        let gen_path = gen_dir(&cfg).join("src").join(if cfg.is_lib { "lib.rs" } else { "main.rs" });
+        let synced = self.ra_sessions.get(&cfg.entry).and_then(|s| s.synced.as_ref()).is_some_and(|x| Arc::ptr_eq(x, &a));
+        if !synced {
+            if write_gen(&cfg, &a.emitted.code).is_err() {
+                return respond(id, empty);
+            }
+            let root = gen_dir(&cfg);
+            let sess = self
+                .ra_sessions
+                .entry(cfg.entry.clone())
+                .or_insert_with(|| RaSession { ra: Ra::start(root), synced: None });
+            rust_completion::sync_job(&sess.ra, gen_path.clone(), a.emitted.code.clone());
+            sess.synced = Some(a.clone());
+        }
+        let Some(sess) = self.ra_sessions.get(&cfg.entry) else { return respond(id, empty) };
+        rust_completion::completion_job(&sess.ra, a.clone(), fid, gen_off, gen_path, cfg.entry.clone(), self.store.clone(), id);
+    }
+
+    fn resolve(&mut self, id: Value, params: &Value) {
+        let found = params["data"]["lrs_ra"].as_u64().and_then(|k| self.store.get(k));
+        match found.and_then(|(entry, raw)| self.ra_sessions.get(&entry).map(|s| (s, raw))) {
+            Some((sess, raw)) => rust_completion::resolve_job(&sess.ra, raw, params.clone(), id),
+            None => respond(id, params.clone()),
+        }
     }
 
     fn query(&mut self, method: &str, params: &Value) -> Option<Value> {
@@ -337,7 +405,6 @@ impl Server {
         Some(match method {
             "textDocument/definition" => Value::Array(features::definition(&a, fid, off())),
             "textDocument/hover" => features::hover(&a, fid, off())?,
-            "textDocument/completion" => json!({"isIncomplete": false, "items": features::completion(&a, fid, off())}),
             _ => Value::Array(features::symbols(&a, fid)),
         })
     }
@@ -358,6 +425,8 @@ pub fn run() -> i32 {
         cargo_rerun: HashSet::new(),
         published: HashSet::new(),
         shutdown: false,
+        ra_sessions: HashMap::new(),
+        store: Arc::new(ItemStore::default()),
     };
     while let Ok(ev) = rx.recv() {
         match ev {
