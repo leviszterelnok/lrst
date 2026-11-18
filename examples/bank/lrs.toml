@@ -1,0 +1,8 @@
+[package]
+name = "bank"
+version = "0.1.0"
+
+[lrs]
+entry = "main.lrs"
+
+[dependencies]

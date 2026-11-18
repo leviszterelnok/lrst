@@ -1,0 +1,81 @@
+// namespace Bank.Ledger: the journal of everything that happened on the accounts.
+// Every money movement goes through the Journal, which records it.
+include "account.lrs"
+
+namespace Bank.Ledger {
+    // A mount inside a namespace: Account and Error need no prefix in this block.
+    namespace { .Bank.Account }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Kind {
+        Deposit,
+        Withdrawal,
+        TransferIn,
+        TransferOut,
+    }
+
+    impl Kind {
+        pub fn label(&self) -> &'static str {
+            match self {
+                Kind::Deposit => "deposit",
+                Kind::Withdrawal => "withdrawal",
+                Kind::TransferIn => "transfer in",
+                Kind::TransferOut => "transfer out",
+            }
+        }
+
+        /// +1 if the money comes in, -1 if it goes out.
+        pub fn sign(&self) -> i64 {
+            match self {
+                Kind::Deposit | Kind::TransferIn => 1,
+                Kind::Withdrawal | Kind::TransferOut => -1,
+            }
+        }
+    }
+
+    pub struct Entry {
+        pub account: u32,
+        pub kind: Kind,
+        pub amount: i64,
+    }
+
+    pub struct Journal {
+        entries: Vec<Entry>,
+    }
+
+    impl Journal {
+        pub fn new() -> Journal {
+            Journal { entries: Vec::new() }
+        }
+
+        pub fn deposit(&mut self, acc: &mut Account, amount: i64) -> Result<(), Error> {
+            acc.deposit(amount)?;
+            self.push(acc.id, Kind::Deposit, amount);
+            Ok(())
+        }
+
+        pub fn withdraw(&mut self, acc: &mut Account, amount: i64) -> Result<(), Error> {
+            acc.withdraw(amount)?;
+            self.push(acc.id, Kind::Withdrawal, amount);
+            Ok(())
+        }
+
+        pub fn transfer(&mut self, from: &mut Account, to: &mut Account, amount: i64) -> Result<(), Error> {
+            from.withdraw(amount)?;
+            to.deposit(amount)?; // cannot fail: the amount was already checked
+            self.push(from.id, Kind::TransferOut, amount);
+            self.push(to.id, Kind::TransferIn, amount);
+            Ok(())
+        }
+
+        /// All entries of one account, oldest first.
+        pub fn history(&self, account: u32) -> Vec<&Entry> {
+            self.entries.iter().filter(|e| e.account == account).collect()
+        }
+
+        // No `pub`: only this file can write to the journal directly.
+        fn push(&mut self, account: u32, kind: Kind, amount: i64) {
+            self.entries.push(Entry { account, kind, amount });
+        }
+    }
+}

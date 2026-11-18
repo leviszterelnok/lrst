@@ -1,0 +1,29 @@
+// namespace Bank.Report: plain-text statements built from accounts and the journal.
+include "account.lrs"
+include "ledger.lrs"
+include "/util/format.lrs"
+
+namespace Bank.Report {
+    // Three mounts at once: Account, Journal, Kind... and money, pad, rule.
+    namespace { .Bank.Account; .Bank.Ledger; .Util.Format }
+
+    const WIDTH: usize = 34;
+
+    pub fn statement(acc: &Account, journal: &Journal) -> String {
+        let mut out = String::new();
+        out += &format!("Statement: {} (#{})\n", acc.owner, acc.id);
+        out += &format!("{}\n", rule(WIDTH));
+        for e in journal.history(acc.id) {
+            let signed = e.kind.sign() * e.amount;
+            out += &format!("{} {:>12}\n", pad(e.kind.label(), 20), money(signed));
+        }
+        out += &format!("{}\n", rule(WIDTH));
+        out += &format!("{} {:>12}\n", pad("balance", 20), money(acc.balance()));
+        out
+    }
+
+    pub fn summary(accounts: &[Account]) -> String {
+        let total: i64 = accounts.iter().map(|a| a.balance()).sum();
+        format!("{} accounts, {} in total", accounts.len(), money(total))
+    }
+}

@@ -1,0 +1,61 @@
+// namespace Bank.Account: one customer account and the errors it can report.
+// It formats amounts with .Util.Format, so it includes that file.
+include "/util/format.lrs"
+
+namespace Bank.Account {
+    #[derive(Debug, PartialEq)]
+    pub enum Error {
+        InvalidAmount,
+        Insufficient { needed: i64, available: i64 },
+    }
+
+    impl std::fmt::Display for Error {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            match self {
+                Error::InvalidAmount => write!(f, "amount must be positive"),
+                Error::Insufficient { needed, available } => write!(
+                    f,
+                    "insufficient funds: need {}, have {}",
+                    .Util.Format.money(*needed),
+                    .Util.Format.money(*available)
+                ),
+            }
+        }
+    }
+
+    pub struct Account {
+        pub id: u32,
+        pub owner: String,
+        balance: i64, // private field (in cents): go through balance(), deposit(), withdraw()
+    }
+
+    impl Account {
+        pub fn open(id: u32, owner: &str) -> Account {
+            Account { id, owner: owner.to_string(), balance: 0 }
+        }
+
+        pub fn balance(&self) -> i64 {
+            self.balance
+        }
+
+        pub fn deposit(&mut self, amount: i64) -> Result<(), Error> {
+            check_positive(amount)?;
+            self.balance += amount;
+            Ok(())
+        }
+
+        pub fn withdraw(&mut self, amount: i64) -> Result<(), Error> {
+            check_positive(amount)?;
+            if amount > self.balance {
+                return Err(Error::Insufficient { needed: amount, available: self.balance });
+            }
+            self.balance -= amount;
+            Ok(())
+        }
+    }
+
+    // No `pub`: private to this file.
+    fn check_positive(amount: i64) -> Result<(), Error> {
+        if amount > 0 { Ok(()) } else { Err(Error::InvalidAmount) }
+    }
+}

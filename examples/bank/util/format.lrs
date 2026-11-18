@@ -1,0 +1,25 @@
+// namespace Util.Format: small text helpers, used by the bank code.
+namespace Util.Format {
+    /// Cents to a decimal string: 12345 -> "123.45", -250 -> "-2.50".
+    pub fn money(cents: i64) -> String {
+        let (sign, whole, part) = split_cents(cents);
+        format!("{}{}.{:02}", sign, whole, part)
+    }
+
+    /// Left-aligns `s` in a field of `width` characters.
+    pub fn pad(s: &str, width: usize) -> String {
+        format!("{:<width$}", s, width = width)
+    }
+
+    /// A horizontal line, `width` characters wide.
+    pub fn rule(width: usize) -> String {
+        "-".repeat(width)
+    }
+
+    // No `pub`: private to this file, other files cannot call it.
+    fn split_cents(cents: i64) -> (&'static str, i64, i64) {
+        let sign = if cents < 0 { "-" } else { "" };
+        let abs = cents.abs();
+        (sign, abs / 100, abs % 100)
+    }
+}

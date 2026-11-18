@@ -1,0 +1,52 @@
+// lrs bank example. Run it with:  lrs run .
+//
+//   main.lrs          this file: includes, mounts, fn main()
+//   account.lrs       namespace Bank.Account   (Account, Error)
+//   ledger.lrs        namespace Bank.Ledger    (Journal, Entry, Kind)
+//   report.lrs        namespace Bank.Report    (statement, summary)
+//   util/format.lrs   namespace Util.Format    (money, pad, rule)
+//
+// `Bank` is filled by three files: declarations of the same namespace merge.
+
+// --- 1. include: add files to the project --------------------------------
+include "account.lrs"         // relative to this file
+include "ledger.lrs"
+include "report.lrs"
+include "/util/format.lrs"    // leading `/` = from the project root
+                              // (account.lrs includes it too: still loaded once)
+
+// --- 2. mount: use a namespace without its prefix ------------------------
+// Account, Error, Journal, Entry and Kind now work here as if defined in main.lrs.
+namespace { .Bank.Account; .Bank.Ledger }
+
+fn main() {
+    let mut alice = Account::open(1, "Alice");
+    let mut bob = Account::open(2, "Bob");
+    let mut journal = Journal::new();
+
+    journal.deposit(&mut alice, 150_000).unwrap();
+    journal.deposit(&mut bob, 20_050).unwrap();
+    journal.withdraw(&mut alice, 12_500).unwrap();
+    journal.transfer(&mut alice, &mut bob, 30_000).unwrap();
+
+    // Errors are ordinary Rust values, matched with the mounted `Error`:
+    match journal.withdraw(&mut bob, 1_000_000) {
+        Err(Error::Insufficient { needed, available }) => {
+            println!("rejected:  need {}, have {}", .Util.Format.money(needed), .Util.Format.money(available));
+        }
+        other => println!("unexpected: {:?}", other),
+    }
+    if let Err(e) = journal.deposit(&mut bob, -5) {
+        println!("rejected:  {}", e);
+    }
+    println!();
+
+    // --- 3. paths: start with `.`, always absolute from the root ---------
+    println!("{}", .Bank.Report.statement(&alice, &journal));
+    println!("{}", .Bank.Report.statement(&bob, &journal));
+    println!("{}", .Bank.Report.summary(&[alice, bob]));
+
+    // --- 4. privacy: no `pub` = private to the file ----------------------
+    // .Util.Format.split_cents(12345);   // error: private to util/format.lrs
+    // alice.balance = 0;                 // error: field private to account.lrs
+}
