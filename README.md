@@ -129,7 +129,7 @@ is private to `account.lrs`, so `alice.balance = 0` in `main.lrs` is an error.
    becomes `crate::A::b`, everything else is copied byte for byte.
 3. A source map ties every output byte to its `.lrs` origin, for rustc diagnostics and the LSP.
 
-The generated crate lives in `<project>/target/lrs/`. Put the usual Cargo keys in `lrs.toml`:
+The generated crate lives in `<project>/target/lrs/`. Put the usual Cargo keys in `Cargo.toml` (the `[lrs]` table holds lrs settings; `lrs.toml` also works):
 
 ```toml
 [package]
@@ -157,7 +157,7 @@ Editor setup — any LSP client, e.g. Neovim:
 
 ```lua
 vim.filetype.add({ extension = { lrs = "lrs" } })
-vim.lsp.config("lrs", { cmd = { "lrs", "lsp" }, filetypes = { "lrs" }, root_markers = { "lrs.toml" } })
+vim.lsp.config("lrs", { cmd = { "lrs", "lsp" }, filetypes = { "lrs" }, root_markers = { "Cargo.toml", "lrs.toml" } })
 vim.lsp.enable("lrs")
 ```
 

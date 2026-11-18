@@ -38,10 +38,22 @@ pub fn analyze(entry: &Path, root: &Path, overlay: &Overlay) -> Result<Analysis,
     Ok(Analysis { project, emitted })
 }
 
+/// The project's config file in `dir`: `lrs.toml`, or a `Cargo.toml` that has an `[lrs]` table.
+fn config_file_in(dir: &Path) -> Option<PathBuf> {
+    let lrs = dir.join("lrs.toml");
+    if lrs.is_file() {
+        return Some(lrs);
+    }
+    let cargo = dir.join("Cargo.toml");
+    let text = std::fs::read_to_string(&cargo).ok()?;
+    let t: toml::Table = text.parse().ok()?;
+    t.contains_key("lrs").then_some(cargo)
+}
+
 pub fn find_config_dir(start: &Path) -> Option<PathBuf> {
     let mut d = Some(start);
     while let Some(x) = d {
-        if x.join("lrs.toml").is_file() {
+        if config_file_in(x).is_some() {
             return Some(x.to_path_buf());
         }
         d = x.parent();
@@ -72,7 +84,7 @@ pub fn find_project(arg: &Path) -> Result<Config, String> {
     let cfg_dir = find_config_dir(&start_dir);
     let (root, mut table) = match &cfg_dir {
         Some(d) => {
-            let path = d.join("lrs.toml");
+            let path = config_file_in(d).unwrap_or_else(|| d.join("lrs.toml"));
             let s = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
             let t: toml::Table = s.parse().map_err(|e| format!("{}: {}", path.display(), e))?;
             (d.clone(), t)
@@ -80,6 +92,10 @@ pub fn find_project(arg: &Path) -> Result<Config, String> {
         None => (start_dir.clone(), toml::Table::new()),
     };
     let lrs_cfg = table.remove("lrs");
+    // Target sections point at the `.lrs` entry (needed by `cargo add` and friends);
+    // the generated crate has its own `src/main.rs` or `src/lib.rs`, so drop them.
+    table.remove("bin");
+    table.remove("lib");
     let entry = match explicit {
         Some(e) => e,
         None => {

@@ -15,7 +15,7 @@ USAGE:
     lrs run       [PATH] [--release] [-- ARGS...]
     lrs lsp                            run the language server on stdio
 
-PATH is a project directory (with lrs.toml / main.lrs / lib.lrs) or an .lrs file.
+PATH is a project directory (with Cargo.toml [lrs] / lrs.toml, and main.lrs or lib.lrs) or an .lrs file.
 ";
 
 fn main() {
@@ -47,7 +47,7 @@ fn real_main() -> i32 {
     }
 }
 
-/// `lrs new NAME`: creates the directory NAME with lrs.toml, main.lrs and .gitignore.
+/// `lrs new NAME`: creates the directory NAME with Cargo.toml, main.lrs and .gitignore.
 fn new_project(args: &[String]) -> i32 {
     let [name] = args else {
         eprintln!("usage: lrs new NAME");
@@ -65,7 +65,7 @@ fn new_project(args: &[String]) -> i32 {
         return 1;
     }
     let files = [
-        ("lrs.toml", format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[lrs]\nentry = \"main.lrs\"\n\n[dependencies]\n")),
+        ("Cargo.toml", format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"{name}\"\npath = \"main.lrs\"\n\n[lrs]\nentry = \"main.lrs\"\n\n[dependencies]\n")),
         ("main.lrs", "// Entry point of the project. Run it with: lrs run .\n\nfn main() {\n    println!(\"Hello from LRS!\");\n}\n".to_string()),
         (".gitignore", "target/\n".to_string()),
     ];
