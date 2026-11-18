@@ -167,8 +167,6 @@ vim.lsp.enable("lrs")
 
 ## TODO
 
-* Privacy variants: a stricter `private` that is not even visible to namespaces nested in the same
-  file, and `pub(file)`-style visibility are not implemented (non-`pub` = file-private only).
 * Private items of the defining file cannot be mounted into other namespaces of that file
   (mounts import public names only).
 * Forward glob imports (`pub use x::*`) through mounts.
