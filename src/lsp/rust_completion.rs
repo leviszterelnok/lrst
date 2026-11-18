@@ -83,6 +83,14 @@ fn map_range(a: &Analysis, fid: usize, code: &str, range: &Value) -> Option<Valu
     Some(features::lsp_range(&a.project.files[fid], ls, le))
 }
 
+/// An edit that lands in the generated glue above this file's own code (rust-analyzer's
+/// auto-`use` goes there) is placed at the top of the `.lrs` file, where a `use` line belongs.
+fn glue_top(a: &Analysis, fid: usize, code: &str, range: &Value) -> Option<Value> {
+    let s = gen_offset(code, range["start"]["line"].as_u64()? as u32, range["start"]["character"].as_u64()? as u32)?;
+    let first_own = a.emitted.map.entries.iter().filter(|e| e.linear && e.file == fid).map(|e| e.out).min()?;
+    (s < first_own).then(|| features::lsp_range(&a.project.files[fid], 0, 0))
+}
+
 /// Convert one rust-analyzer item into a `.lrs` item. Edits that cannot be mapped are dropped.
 fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, key: u64) -> Value {
     let mut out = json!({});
@@ -106,7 +114,10 @@ fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, key: u64) -> Valu
     if let Some(extra) = raw.get("additionalTextEdits").and_then(Value::as_array) {
         let edits: Vec<Value> = extra
             .iter()
-            .filter_map(|e| Some(json!({"range": map_range(a, fid, code, &e["range"])?, "newText": e["newText"]})))
+            .filter_map(|e| {
+                let range = map_range(a, fid, code, &e["range"]).or_else(|| glue_top(a, fid, code, &e["range"]))?;
+                Some(json!({"range": range, "newText": e["newText"]}))
+            })
             .collect();
         if !edits.is_empty() {
             out["additionalTextEdits"] = Value::Array(edits);

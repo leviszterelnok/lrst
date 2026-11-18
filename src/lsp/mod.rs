@@ -300,8 +300,13 @@ impl Server {
             ("textDocument/didOpen", _) => {
                 if let Some(path) = params["textDocument"]["uri"].as_str().and_then(uri_to_path) {
                     let text = params["textDocument"]["text"].as_str().unwrap_or("").to_string();
-                    self.docs.insert(normalize(&path), text);
+                    let path = normalize(&path);
+                    self.docs.insert(path.clone(), text);
                     self.invalidate();
+                    // start rust-analyzer and its indexing now, so the first completion is not kept waiting
+                    if let Some(a) = self.analysis_for(&path) {
+                        self.sync_ra(&path, &a);
+                    }
                     self.publish_all();
                 }
             }
@@ -363,16 +368,19 @@ impl Server {
             return respond(id, json!({"isIncomplete": false, "items": lrs_items}));
         }
         let Some(gen_off) = rust_completion::lrs_to_gen(&a, fid, off) else { return respond(id, empty) };
-        // only projects have a generated crate; a loose file gets the LRS answer only
-        let Some(cfg) = path.parent().and_then(find_config_dir).and_then(|cd| find_project(&cd).ok()) else {
-            return respond(id, empty);
-        };
+        let Some((cfg, gen_path)) = self.sync_ra(&path, &a) else { return respond(id, empty) };
+        let Some(sess) = self.ra_sessions.get(&cfg.entry) else { return respond(id, empty) };
+        rust_completion::completion_job(&sess.ra, a.clone(), fid, gen_off, gen_path, cfg.entry.clone(), self.store.clone(), id);
+    }
+
+    /// Make sure rust-analyzer has the generated crate of `a` (the analysis of the `.lrs` file
+    /// at `path`). Returns the project config and the generated file. Loose files have none.
+    fn sync_ra(&mut self, path: &Path, a: &Arc<Analysis>) -> Option<(Config, PathBuf)> {
+        let cfg = path.parent().and_then(find_config_dir).and_then(|cd| find_project(&cd).ok())?;
         let gen_path = gen_dir(&cfg).join("src").join(if cfg.is_lib { "lib.rs" } else { "main.rs" });
-        let synced = self.ra_sessions.get(&cfg.entry).and_then(|s| s.synced.as_ref()).is_some_and(|x| Arc::ptr_eq(x, &a));
+        let synced = self.ra_sessions.get(&cfg.entry).and_then(|s| s.synced.as_ref()).is_some_and(|x| Arc::ptr_eq(x, a));
         if !synced {
-            if write_gen(&cfg, &a.emitted.code).is_err() {
-                return respond(id, empty);
-            }
+            write_gen(&cfg, &a.emitted.code).ok()?;
             let root = gen_dir(&cfg);
             let sess = self
                 .ra_sessions
@@ -381,8 +389,7 @@ impl Server {
             rust_completion::sync_job(&sess.ra, gen_path.clone(), a.emitted.code.clone());
             sess.synced = Some(a.clone());
         }
-        let Some(sess) = self.ra_sessions.get(&cfg.entry) else { return respond(id, empty) };
-        rust_completion::completion_job(&sess.ra, a.clone(), fid, gen_off, gen_path, cfg.entry.clone(), self.store.clone(), id);
+        Some((cfg, gen_path))
     }
 
     fn resolve(&mut self, id: Value, params: &Value) {
