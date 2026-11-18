@@ -22,7 +22,7 @@ cc -shared -fPIC -O2 -I src src/parser.c -o lrs.so
 
 mkdir -p "$NVIM_PARSER_DIR" "$NVIM_QUERY_DIR"
 cp lrs.so "$NVIM_PARSER_DIR/lrs.so"
-cp queries/highlights.scm "$NVIM_QUERY_DIR/highlights.scm"
+cp queries/highlights.scm queries/injections.scm "$NVIM_QUERY_DIR/"
 
 echo "kész: $NVIM_PARSER_DIR/lrs.so"
-echo "kész: $NVIM_QUERY_DIR/highlights.scm"
+echo "kész: $NVIM_QUERY_DIR/{highlights,injections}.scm"
