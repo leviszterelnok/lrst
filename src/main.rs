@@ -8,6 +8,7 @@ const HELP: &str = "\
 lrs - Rust with namespaces and includes
 
 USAGE:
+    lrs new       NAME                 create a new project in the directory NAME
     lrs transpile [PATH] [-o FILE]     print (or write) the generated Rust
     lrs check     [PATH] [--release]   transpile + cargo check
     lrs build     [PATH] [--release]   transpile + cargo build
@@ -37,12 +38,50 @@ fn real_main() -> i32 {
             0
         }
         "lsp" => lrs::lsp::run(),
+        "new" => new_project(&args[1..]),
         "transpile" | "check" | "build" | "run" => compile(cmd, &args[1..]),
         other => {
             eprintln!("unknown command `{}`\n\n{}", other, HELP);
             2
         }
     }
+}
+
+/// `lrs new NAME`: creates the directory NAME with lrs.toml, main.lrs and .gitignore.
+fn new_project(args: &[String]) -> i32 {
+    let [name] = args else {
+        eprintln!("usage: lrs new NAME");
+        return 2;
+    };
+    let valid = name.chars().next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !valid {
+        eprintln!("error: `{}` is not a valid project name (letters, digits, `_` or `-`; must not start with a digit)", name);
+        return 2;
+    }
+    let dir = PathBuf::from(name);
+    if dir.exists() {
+        eprintln!("error: {} already exists", dir.display());
+        return 1;
+    }
+    let files = [
+        ("lrs.toml", format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[lrs]\nentry = \"main.lrs\"\n\n[dependencies]\n")),
+        ("main.lrs", "// Entry point of the project. Run it with: lrs run .\n\nfn main() {\n    println!(\"Hello from LRS!\");\n}\n".to_string()),
+        (".gitignore", "target/\n".to_string()),
+    ];
+    if let Err(e) = std::fs::create_dir(&dir) {
+        eprintln!("error: {}: {}", dir.display(), e);
+        return 1;
+    }
+    for (file, content) in files {
+        let path = dir.join(file);
+        if let Err(e) = std::fs::write(&path, content) {
+            eprintln!("error: {}: {}", path.display(), e);
+            return 1;
+        }
+    }
+    println!("created project `{}` in {}", name, dir.display());
+    0
 }
 
 fn compile(cmd: &str, args: &[String]) -> i32 {
