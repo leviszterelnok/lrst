@@ -54,6 +54,11 @@ namespace Bank.Account {
         }
     }
 
+    // Same name as Ledger.describe: see the mount in main.lrs.
+    pub fn describe(acc: &Account) -> String {
+        format!("account #{} of {}, balance {}", acc.id, acc.owner, .Util.Format.money(acc.balance()))
+    }
+
     // No `pub`: private to this file.
     fn check_positive(amount: i64) -> Result<(), Error> {
         if amount > 0 { Ok(()) } else { Err(Error::InvalidAmount) }

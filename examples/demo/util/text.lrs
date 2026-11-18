@@ -1,7 +1,0 @@
-// namespace Util.Text. Together with util/math.lrs it forms the namespace `Util`.
-namespace Util.Text {
-    pub fn shout(s: &str) -> String { format!("{}!", s.to_uppercase()) }
-
-    // Same name as Shapes.label: see the mount in main.lrs.
-    pub fn label(name: &str) -> String { format!("[text] {}", name) }
-}

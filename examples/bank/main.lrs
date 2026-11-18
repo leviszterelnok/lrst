@@ -17,6 +17,7 @@ include "/util/format.lrs"    // leading `/` = from the project root
 
 // --- 2. mount: use a namespace without its prefix ------------------------
 // Account, Error, Journal, Entry and Kind now work here as if defined in main.lrs.
+// Both have a `describe`: the first mount wins, so `describe` means .Bank.Account.describe.
 namespace { .Bank.Account; .Bank.Ledger }
 
 fn main() {
@@ -39,6 +40,10 @@ fn main() {
     if let Err(e) = journal.deposit(&mut bob, -5) {
         println!("rejected:  {}", e);
     }
+    println!();
+
+    println!("describe:  {}", describe(&alice));                              // the mounted one
+    println!("entry:     {}", .Bank.Ledger.describe(journal.history(1)[0]));   // the one that lost the clash
     println!();
 
     // --- 3. paths: start with `.`, always absolute from the root ---------

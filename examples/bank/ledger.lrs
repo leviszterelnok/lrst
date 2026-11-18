@@ -1,6 +1,7 @@
 // namespace Bank.Ledger: the journal of everything that happened on the accounts.
 // Every money movement goes through the Journal, which records it.
 include "account.lrs"
+include "/util/format.lrs"
 
 namespace Bank.Ledger {
     // A mount inside a namespace: Account and Error need no prefix in this block.
@@ -37,6 +38,11 @@ namespace Bank.Ledger {
         pub account: u32,
         pub kind: Kind,
         pub amount: i64,
+    }
+
+    // Same name as Account.describe: see the mount in main.lrs.
+    pub fn describe(e: &Entry) -> String {
+        format!("{} of {} on account #{}", e.kind.label(), .Util.Format.money(e.amount), e.account)
     }
 
     pub struct Journal {

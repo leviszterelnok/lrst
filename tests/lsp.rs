@@ -1,4 +1,4 @@
-//! Drives `lrs lsp` over stdio against the demo project.
+//! Drives `lrs lsp` over stdio against the bank example project.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -100,7 +100,7 @@ fn uri(p: &std::path::Path) -> String {
 
 #[test]
 fn lsp_features() {
-    let demo = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/demo")).unwrap();
+    let demo = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/bank")).unwrap();
     let main = demo.join("main.lrs");
     let text = std::fs::read_to_string(&main).unwrap();
     let main_uri = uri(&main);
@@ -111,56 +111,56 @@ fn lsp_features() {
     c.notify("initialized", json!({}));
     c.notify("textDocument/didOpen", json!({"textDocument": {"uri": main_uri, "languageId": "lrs", "version": 1, "text": text}}));
     let d = c.wait_diag("main.lrs", |_| true);
-    assert!(d.is_empty(), "demo should have no lrs diagnostics: {:?}", d);
+    assert!(d.is_empty(), "bank example should have no lrs diagnostics: {:?}", d);
 
-    // go to definition: .Shapes.Circle::new  ->  shapes.lrs
+    // go to definition: .Bank.Report.statement  ->  report.lrs
     let def = c.request(
         "textDocument/definition",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Shapes.Circle::new", 9)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Bank.Report.statement", 15)}),
     );
     let loc = &def[0];
-    assert!(loc["uri"].as_str().unwrap().ends_with("shapes.lrs"), "{}", def);
-    let shapes = std::fs::read_to_string(demo.join("shapes.lrs")).unwrap();
-    assert_eq!(loc["range"]["start"]["line"], pos_of(&shapes, "pub struct Circle", 12)["line"]);
+    assert!(loc["uri"].as_str().unwrap().ends_with("report.lrs"), "{}", def);
+    let report = std::fs::read_to_string(demo.join("report.lrs")).unwrap();
+    assert_eq!(loc["range"]["start"]["line"], pos_of(&report, "pub fn statement", 7)["line"]);
 
-    // go to definition on an `include` string
+    // go to definition on an `include` string (root-relative)
     let def = c.request(
         "textDocument/definition",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, "\"util/text.lrs\"", 3)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, "\"/util/format.lrs\"", 3)}),
     );
-    assert!(def[0]["uri"].as_str().unwrap().ends_with("util/text.lrs"), "{}", def);
+    assert!(def[0]["uri"].as_str().unwrap().ends_with("util/format.lrs"), "{}", def);
 
     // hover
-    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Math.PI", 12)}));
-    assert!(h["contents"]["value"].as_str().unwrap().contains("pub const PI: f64"), "{}", h);
+    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Format.money", 14)}));
+    assert!(h["contents"]["value"].as_str().unwrap().contains("pub fn money(cents: i64) -> String"), "{}", h);
 
     // hover on a namespace segment
-    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Math.PI", 3)}));
+    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Format.money", 3)}));
     assert!(h["contents"]["value"].as_str().unwrap().contains("namespace .Util"), "{}", h);
 
-    // completion after `.Util.Math.`
-    let edited = text.replacen("fn main() {", "fn main() {\n    let _z = .Util.Math.;", 1);
+    // completion after `.Util.Format.`
+    let edited = text.replacen("fn main() {", "fn main() {\n    let _z = .Util.Format.;", 1);
     c.notify("textDocument/didChange", json!({"textDocument": {"uri": main_uri, "version": 2}, "contentChanges": [{"text": edited}]}));
     let comp = c.request(
         "textDocument/completion",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited, "let _z = .Util.Math.", 20)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited, "let _z = .Util.Format.", 22)}),
     );
     let labels: Vec<&str> = comp["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
-    assert!(labels.contains(&"sqr") && labels.contains(&"clamp") && labels.contains(&"PI"), "{:?}", labels);
-    assert!(!labels.contains(&"internal_mul"), "{:?}", labels);
+    assert!(labels.contains(&"money") && labels.contains(&"pad") && labels.contains(&"rule"), "{:?}", labels);
+    assert!(!labels.contains(&"split_cents"), "{:?}", labels);
 
     // completion at the root: namespaces
     let edited2 = text.replacen("fn main() {", "fn main() {\n    let _z = .;", 1);
     c.notify("textDocument/didChange", json!({"textDocument": {"uri": main_uri, "version": 3}, "contentChanges": [{"text": edited2}]}));
     let comp = c.request("textDocument/completion", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited2, "let _z = .", 10)}));
     let labels: Vec<&str> = comp["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
-    assert!(labels.contains(&"Util") && labels.contains(&"Shapes") && labels.contains(&"main"), "{:?}", labels);
+    assert!(labels.contains(&"Util") && labels.contains(&"Bank") && labels.contains(&"main"), "{:?}", labels);
 
     // document symbols of a file that was never opened
-    let math = demo.join("util/math.lrs");
-    let syms = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri(&math)}}));
+    let format = demo.join("util/format.lrs");
+    let syms = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri(&format)}}));
     let names: Vec<&str> = syms.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&".Util.Math") && names.contains(&"sqr") && names.contains(&"clamp"), "{:?}", names);
+    assert!(names.contains(&".Util.Format") && names.contains(&"money") && names.contains(&"pad"), "{:?}", names);
 
     // diagnostics for a bad include and a bad path
     let broken = format!("include \"missing.lrs\"\n{}\nfn broken() {{ let _ = .Nope.x(); }}\n", text);

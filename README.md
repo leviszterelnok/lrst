@@ -18,55 +18,58 @@ lrs lsp                            language server on stdio
 
 ```
 cargo install --path .
-cd examples/demo && lrs run .
+cd examples/bank && lrs run .
 ```
 
-## The demo
+## The example
 
-This README explains the language with the project in [`examples/demo`](examples/demo). Every snippet
-below is copied from it, with its real names, so open the demo next to this file.
+This README explains the language with the project in [`examples/bank`](examples/bank), a small bank
+ledger. Every snippet below is copied from it, with its real names, so open it next to this file.
 
 ```
-examples/demo/
-├── main.lrs         includes, mounts, fn main()
-├── shapes.lrs       namespace Shapes      (Circle, Rect, label)
+examples/bank/
+├── lrs.toml          project settings
+├── main.lrs          includes, mounts, fn main()
+├── account.lrs       namespace Bank.Account   (Account, Error, describe)
+├── ledger.lrs        namespace Bank.Ledger    (Journal, Entry, Kind, describe)
+├── report.lrs        namespace Bank.Report    (statement, summary)
 └── util/
-    ├── math.lrs     namespace Util.Math   (PI, sqr, clamp)
-    └── text.lrs     namespace Util.Text   (shout, label)
+    └── format.lrs    namespace Util.Format    (money, pad, rule)
 ```
 
 ## The language
 
 ### Namespaces
 
-`namespace Util.Math { .. }` (in `util/math.lrs`) is short for `namespace Util { namespace Math { .. } }`.
-A namespace can be declared in any number of files and the declarations merge: `util/text.lrs` declares
-`Util.Text`, so `Util` ends up holding both `Math` and `Text`. Code outside any namespace lives in the
-root. Nested namespaces see the names around them, like in C++.
+`namespace Bank.Ledger { .. }` (in `ledger.lrs`) is short for `namespace Bank { namespace Ledger { .. } }`.
+A namespace can be declared in any number of files and the declarations merge: `account.lrs`, `ledger.lrs`
+and `report.lrs` all add to `Bank`, so `Bank` ends up holding `Account`, `Ledger` and `Report`. Code outside
+any namespace lives in the root. Nested namespaces see the names around them, like in C++.
 
 ### Include
 
 ```rust
 // main.lrs
-include "shapes.lrs"          // relative to this file
-include "util/text.lrs"
-include "/util/math.lrs"      // leading `/` = from the project root
+include "account.lrs"         // relative to this file
+include "ledger.lrs"
+include "report.lrs"
+include "/util/format.lrs"    // leading `/` = from the project root
 ```
 
 * Top level only (not inside a `namespace` or a function).
-* Every file is loaded once, so `main.lrs` and `shapes.lrs` can both include `util/math.lrs`. Cycles are fine.
+* Every file is loaded once, so `main.lrs`, `account.lrs` and `ledger.lrs` can all include `/util/format.lrs`. Cycles are fine.
 * The `namespace` blocks inside an included file say where its items go.
 
 ### Paths
 
 ```rust
-println!("{}", .Util.Math.clamp(15, 0, 10));
-radii.iter().map(|r| .Shapes.Circle::new(*r).area())
+println!("{}", .Util.Format.money(needed));
+println!("{}", .Bank.Report.statement(&alice, &journal));
 ```
 
 A path starts with `.` and is absolute (from the root). It ends at the first item, so in
-`.Shapes.Circle::new(*r).area()` the path is `.Shapes.Circle::new` and `.area()` is an ordinary method
-call. A namespace is not a value: `.Util.Math` on its own is an error.
+`.Bank.Account::open(1, "Alice").balance()` the path is `.Bank.Account::open` and `.balance()` is an ordinary
+method call. A namespace is not a value: `.Bank.Account` on its own is an error.
 
 A `.` starts a path where it cannot be a field or method access: after `=`, `(`, `,`, `{`, `|`, `&`, `->`,
 `:`, `<` or a keyword like `return`. After a `}` the name that follows decides: a namespace name is a path,
@@ -77,20 +80,21 @@ a method name is a method call (if both exist, a blank line means path, otherwis
 A mount lets you use a namespace's names without its prefix (like `using namespace`).
 
 ```rust
-namespace { .Shapes; .Util.Text }     // main.lrs
+namespace { .Bank.Account; .Bank.Ledger }     // main.lrs
 
-let circle = Circle::new(1.0);        // same as .Shapes.Circle::new(1.0)
-shout("hello")                        // same as .Util.Text.shout("hello")
-label("x")                            // "[shape] x"
-.Util.Text.label("x")                 // "[text] x"
+let mut alice = Account::open(1, "Alice");   // same as .Bank.Account::open(1, "Alice")
+describe(&alice)                              // "account #1 of Alice, balance 1075.00"
+.Bank.Ledger.describe(journal.history(1)[0])  // "deposit of 1500.00 on account #1"
 ```
 
-* `Shapes` and `Util.Text` both define `label`: **the first mount wins**. The other is still reachable by path.
-* A mount goes into the root, or into another namespace: `main.lrs` writes `namespace { .Shapes }` inside
-  `namespace Report { .. }`, so `Circle` and `Rect` need no prefix there (`namespace Report { .Shapes }` is
-  the short form when the block holds nothing else).
+* `Bank.Account` and `Bank.Ledger` both define `describe`: **the first mount wins**. The other is still
+  reachable by path.
+* A mount goes into the root, or into another namespace: `report.lrs` writes
+  `namespace { .Bank.Account; .Bank.Ledger; .Util.Format }` inside `namespace Bank.Report { .. }`, so `Account`,
+  `Journal` and `money` need no prefix there. `ledger.lrs` does the same with `namespace { .Bank.Account }`
+  inside `Bank.Ledger`.
 * Priority: names defined in the namespace itself, then mounts in order. Mounts re-export what they
-  import (so `.Report.Circle` works) and chain (mounting `.A` also brings what `.A` mounted). They only
+  import (so `.Bank.Report.Account::open` works) and chain (mounting `.A` also brings what `.A` mounted). They only
   import what Rust privacy allows.
 
 ### Privacy
@@ -99,17 +103,21 @@ Items without `pub` are private to **the file** that defines them, even when oth
 namespace. Namespaces and includes need no `pub`.
 
 ```rust
-// util/math.lrs
-namespace Util.Math {
-    pub fn sqr(x: f64) -> f64 { internal_mul(x, x) }
-    fn internal_mul(a: f64, b: f64) -> f64 { a * b }    // private to this file
+// util/format.lrs
+namespace Util.Format {
+    pub fn money(cents: i64) -> String {
+        let (sign, whole, part) = split_cents(cents);
+        format!("{}{}.{:02}", sign, whole, part)
+    }
+    fn split_cents(cents: i64) -> (&'static str, i64, i64) { ... }    // private to this file
 }
 
-// main.lrs:   .Util.Math.internal_mul(2.0, 3.0)   -> error
+// main.lrs:   .Util.Format.split_cents(12345)   -> error
 ```
 
-Inside `util/math.lrs`, every namespace of that file can use `.Util.Math.internal_mul` by path. Two files
-may each have their own private item with the same name. Struct fields keep Rust's rule.
+Inside `util/format.lrs`, every namespace of that file can use `.Util.Format.split_cents` by path. Two files
+may each have their own private item with the same name. Struct fields keep Rust's rule: `Account.balance`
+is private to `account.lrs`, so `alice.balance = 0` in `main.lrs` is an error.
 
 ## How it works
 
@@ -177,4 +185,4 @@ vim.lsp.enable("lrs")
 ## Tests
 
 `cargo test` runs unit tests, end-to-end tests (transpile, build and run real projects, check privacy,
-precedence, include rules, mapped diagnostics) and an LSP session against `examples/demo`.
+precedence, include rules, mapped diagnostics) and an LSP session against `examples/bank`.
