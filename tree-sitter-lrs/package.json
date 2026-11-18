@@ -1,0 +1,10 @@
+{
+  "name": "tree-sitter-lrs",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for lrs (Rust with namespaces, includes and mounts)",
+  "license": "MIT",
+  "private": true,
+  "tree-sitter": [
+    { "scope": "source.lrs", "file-types": ["lrs"], "highlights": "queries/highlights.scm" }
+  ]
+}

@@ -1,0 +1,16 @@
+include "graphics/core.lrs";
+
+namespace Geo.Pair {
+    pub struct Pair { x: i32 }
+    impl Pair { fn new() -> Self { Pair { x: 0 } } }
+}
+
+namespace {
+    .Geo.Pair;
+    .Config
+}
+
+fn main() {
+    let p: .Geo.Pair = .Geo.Pair::new();
+    let s = 'a' + 'x';  // comment
+}
