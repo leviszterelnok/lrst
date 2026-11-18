@@ -14,140 +14,112 @@ lrs run       [PATH] [--release] [-- ARGS...]
 lrs lsp                            language server on stdio
 ```
 
-## Syntax at a glance
+`PATH` is a project directory or an `.lrs` file. To try it:
 
-| You write | Meaning |
-|---|---|
-| `namespace Foo { .. }` / `namespace Foo.Bar { .. }` | declare (or reopen) a namespace; declarations merge across files |
-| `include "foo.lrs"` / `include "/graphics/core.lrs"` | add a file (relative to this file / to the project root); top level only |
-| `namespace { .Foo }` | mount: names in `.Foo` are usable in the root without the prefix |
-| `namespace { .Foo; .Bar }` | mount several; on a name clash the first wins |
-| `namespace Foo { .Bar }` | mount `.Bar` into `.Foo` |
-| `.Foo.Bar.baz()` / `.Foo.Bar::new()` | absolute path, always starts with `.` |
-| `.Foo.Bar` (nothing after) | error: a namespace is not a value |
-| `pub` | same as Rust; namespaces and includes need no `pub` |
+```
+cargo install --path .
+cd examples/demo && lrs run .
+```
 
-`PATH` is a project directory or an `.lrs` file. Build with `cargo build --release`; try the demo with
-`cd examples/demo && lrs run .`.
+## The demo
+
+This README explains the language with the project in [`examples/demo`](examples/demo). Every snippet
+below is copied from it, with its real names, so open the demo next to this file.
+
+```
+examples/demo/
+├── main.lrs         includes, mounts, fn main()
+├── shapes.lrs       namespace Shapes      (Circle, Rect, label)
+└── util/
+    ├── math.lrs     namespace Util.Math   (PI, sqr, clamp)
+    └── text.lrs     namespace Util.Text   (shout, label)
+```
 
 ## The language
 
-### Defining namespaces
+### Namespaces
+
+`namespace Util.Math { .. }` (in `util/math.lrs`) is short for `namespace Util { namespace Math { .. } }`.
+A namespace can be declared in any number of files and the declarations merge: `util/text.lrs` declares
+`Util.Text`, so `Util` ends up holding both `Math` and `Text`. Code outside any namespace lives in the
+root. Nested namespaces see the names around them, like in C++.
+
+### Include
 
 ```rust
-namespace Foo {}
-namespace Foo.Bar {}          // same as namespace Foo { namespace Bar {} }
+// main.lrs
+include "shapes.lrs"          // relative to this file
+include "util/text.lrs"
+include "/util/math.lrs"      // leading `/` = from the project root
 ```
 
-A namespace can be declared any number of times, in any file; all declarations are merged.
-Nested namespaces see the names of the namespaces around them (like C++), and everything not
-inside a namespace lives in the root (global) namespace.
-
-### Including files
-
-```rust
-include "foo.lrs"             // relative to the including file
-include "utils/math.lrs"
-include "/graphics/core.lrs"  // leading / = from the project root
-```
-
-* Only at the top level of a file (not inside `namespace` blocks or functions).
-* Every file is included at most once, circular includes are fine.
-* An included file contributes to the *global* namespace tree; the `namespace` blocks inside it say
-  where its items go. Include order decides "first definition wins" for mounts.
-
-### Mounting ("using namespace")
-
-```rust
-namespace { .Foo }            // everything in .Foo is usable in the root without `.Foo`
-namespace { .Foo; .Bar }      // both; .Foo.x and .Bar.x still work. On a clash the first one wins
-namespace Foo { .Bar }        // inside .Foo, .Bar's names are usable directly
-```
-
-Rules: names defined in the namespace itself always beat mounted names; then mounts in order.
-Mounts re-export (`pub use`) what they import, so `.Foo.x` works for names mounted into `.Foo`,
-and mounts chain (mounting `.A` also brings what `.A` mounted). A mount only imports what Rust
-privacy allows — private items are importable only from inside the namespace.
-
-You do not have to write the full path every time. Mount the namespace once, then use the names
-directly:
-
-```rust
-namespace Geo {
-    pub struct Sq(pub f64);
-    pub enum Kind { A(i32), B }
-}
-
-namespace { .Geo }            // mount once, in the root
-
-fn main() {
-    let s = Sq(3.0);          // instead of .Geo.Sq(3.0)
-    let k = Kind::B;          // instead of .Geo.Kind::B
-}
-```
-
-Use `.Geo.Sq` only when the name is ambiguous or you want to be explicit.
+* Top level only (not inside a `namespace` or a function).
+* Every file is loaded once, so `main.lrs` and `shapes.lrs` can both include `util/math.lrs`. Cycles are fine.
+* The `namespace` blocks inside an included file say where its items go.
 
 ### Paths
 
 ```rust
-.Something.Subnamespace.Innerstruct::new()
-let p: .Geo.Pair = ...;      // types, patterns, bounds, impl headers — anywhere a path is allowed
+println!("{}", .Util.Math.clamp(15, 0, 10));
+radii.iter().map(|r| .Shapes.Circle::new(*r).area())
 ```
 
-A path starts with `.` and is absolute from the root. The path ends at the first item, so
-`.Config.LIMIT.len()` calls `len` on the constant. A `.` begins a path when it cannot be a field or
-method access, i.e. when the previous token cannot end an expression (`=`, `(`, `,`, `{`, `->`, `:`,
-`<`, `&`, `|`, keywords like `return`/`in`/`impl`/`for`/`where`/`use`, …).
+A path starts with `.` and is absolute (from the root). It ends at the first item, so in
+`.Shapes.Circle::new(*r).area()` the path is `.Shapes.Circle::new` and `.area()` is an ordinary method
+call. A namespace is not a value: `.Util.Math` on its own is an error.
 
-Namespace names can be any identifier (snake_case included). After a block `}` the `.` is resolved
-by the name that follows it:
+A `.` starts a path where it cannot be a field or method access: after `=`, `(`, `,`, `{`, `|`, `&`, `->`,
+`:`, `<` or a keyword like `return`. After a `}` the name that follows decides: a namespace name is a path,
+a method name is a method call (if both exist, a blank line means path, otherwise method call).
 
-* only a namespace of that name exists: namespace path;
-* only a method of that name exists (a `fn` with `self` in the project): method call;
-* both exist (collision): with one newline or none between `}` and `.` the method wins; with two
-  or more newlines (a blank line) the namespace wins.
+### Mounts
 
-`}\n.map(f)` chains; `}\n\n.my_math.f();` calls into the namespace `my_math`.
-
-A namespace is not a value: `.Foo` on its own is an error, name an item inside it.
-
-### Visibility
-
-Items are private unless marked `pub` (or `pub(crate)`); namespaces and includes are always
-visible. **Private means private to the file that defines it**, even when other files contribute to
-the same namespace:
+A mount lets you use a namespace's names without its prefix (like `using namespace`).
 
 ```rust
-// b.lrs
-namespace B {
-    fn internal_stuff() {}          // only code in b.lrs can use this
-    pub fn public_stuff() {}
-}
+namespace { .Shapes; .Util.Text }     // main.lrs
 
-// a.lrs
-include "b.lrs"
-namespace B {
-    // public_stuff() is usable here, internal_stuff() is NOT (error), not even by .B.internal_stuff()
-}
+let circle = Circle::new(1.0);        // same as .Shapes.Circle::new(1.0)
+shout("hello")                        // same as .Util.Text.shout("hello")
+label("x")                            // "[shape] x"
+.Util.Text.label("x")                 // "[text] x"
 ```
 
-Inside the defining file a private item is usable from every namespace of that file (by path:
-`.B.internal_stuff()` from `namespace Other` in the same file). Two files may each have their own
-private item with the same name. Mounts only import public items. Struct fields keep Rust's rule
-(private to the module the struct is defined in).
+* `Shapes` and `Util.Text` both define `label`: **the first mount wins**. The other is still reachable by path.
+* A mount goes into the root, or into another namespace: `main.lrs` writes `namespace { .Shapes }` inside
+  `namespace Report { .. }`, so `Circle` and `Rect` need no prefix there (`namespace Report { .Shapes }` is
+  the short form when the block holds nothing else).
+* Priority: names defined in the namespace itself, then mounts in order. Mounts re-export what they
+  import (so `.Report.Circle` works) and chain (mounting `.A` also brings what `.A` mounted). They only
+  import what Rust privacy allows.
+
+### Privacy
+
+Items without `pub` are private to **the file** that defines them, even when other files add to the same
+namespace. Namespaces and includes need no `pub`.
+
+```rust
+// util/math.lrs
+namespace Util.Math {
+    pub fn sqr(x: f64) -> f64 { internal_mul(x, x) }
+    fn internal_mul(a: f64, b: f64) -> f64 { a * b }    // private to this file
+}
+
+// main.lrs:   .Util.Math.internal_mul(2.0, 3.0)   -> error
+```
+
+Inside `util/math.lrs`, every namespace of that file can use `.Util.Math.internal_mul` by path. Two files
+may each have their own private item with the same name. Struct fields keep Rust's rule.
 
 ## How it works
 
-1. A Rust-aware lexer feeds a top-level parser that only understands `namespace`, `include`, mount
-   lists and item boundaries (items are otherwise opaque — which is what keeps Rust compatibility).
-2. All files are merged into a namespace tree. Each namespace becomes a `pub mod` that re-exports the
-   *public* items of every file (the canonical tree, `crate::Foo::Bar`); each file's real items live in a
-   hidden per-file module tree (`crate::__lrs_f0::Foo::Bar`) and non-`pub` items get `pub(in <that file module>)`, which is
-   what makes them file-private. Mounts become
-   explicit `use` lists computed at transpile time (so "first wins" works), and `.A.b` paths are
-   rewritten to `crate::A::b`. Everything else is copied byte for byte.
-3. A source map ties every output byte to its `.lrs` origin, used for rustc diagnostics and the LSP.
+1. A Rust-aware lexer feeds a small parser that only understands `namespace`, `include`, mounts and
+   item boundaries. Items stay opaque, which is what keeps Rust compatibility.
+2. The files are merged into a namespace tree. Each namespace becomes a `pub mod` that re-exports the
+   public items of every file. The real items live in a hidden module per file, and non-`pub` items are
+   visible only inside it (that is the file-privacy). Mounts become explicit `use` lists, `.A.b`
+   becomes `crate::A::b`, everything else is copied byte for byte.
+3. A source map ties every output byte to its `.lrs` origin, for rustc diagnostics and the LSP.
 
 The generated crate lives in `<project>/target/lrs/`. Put the usual Cargo keys in `lrs.toml`:
 

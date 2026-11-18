@@ -113,54 +113,54 @@ fn lsp_features() {
     let d = c.wait_diag("main.lrs", |_| true);
     assert!(d.is_empty(), "demo should have no lrs diagnostics: {:?}", d);
 
-    // go to definition: .Graphics.Core.Shape::square  ->  graphics/core.lrs
+    // go to definition: .Shapes.Circle::new  ->  shapes.lrs
     let def = c.request(
         "textDocument/definition",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Graphics.Core.Shape::square", 16)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Shapes.Circle::new", 9)}),
     );
     let loc = &def[0];
-    assert!(loc["uri"].as_str().unwrap().ends_with("graphics/core.lrs"), "{}", def);
-    let core = std::fs::read_to_string(demo.join("graphics/core.lrs")).unwrap();
-    assert_eq!(loc["range"]["start"]["line"], pos_of(&core, "pub enum Shape", 9)["line"]);
+    assert!(loc["uri"].as_str().unwrap().ends_with("shapes.lrs"), "{}", def);
+    let shapes = std::fs::read_to_string(demo.join("shapes.lrs")).unwrap();
+    assert_eq!(loc["range"]["start"]["line"], pos_of(&shapes, "pub struct Circle", 12)["line"]);
 
     // go to definition on an `include` string
     let def = c.request(
         "textDocument/definition",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, "\"utils/math.lrs\"", 3)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, "\"util/text.lrs\"", 3)}),
     );
-    assert!(def[0]["uri"].as_str().unwrap().ends_with("utils/math.lrs"), "{}", def);
+    assert!(def[0]["uri"].as_str().unwrap().ends_with("util/text.lrs"), "{}", def);
 
     // hover
-    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Utils.Math.PI", 13)}));
+    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Math.PI", 12)}));
     assert!(h["contents"]["value"].as_str().unwrap().contains("pub const PI: f64"), "{}", h);
 
     // hover on a namespace segment
-    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Utils.Math.PI", 3)}));
-    assert!(h["contents"]["value"].as_str().unwrap().contains("namespace .Utils"), "{}", h);
+    let h = c.request("textDocument/hover", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&text, ".Util.Math.PI", 3)}));
+    assert!(h["contents"]["value"].as_str().unwrap().contains("namespace .Util"), "{}", h);
 
-    // completion after `.Utils.Math.`
-    let edited = text.replacen("fn main() {", "fn main() {\n    let _z = .Utils.Math.;", 1);
+    // completion after `.Util.Math.`
+    let edited = text.replacen("fn main() {", "fn main() {\n    let _z = .Util.Math.;", 1);
     c.notify("textDocument/didChange", json!({"textDocument": {"uri": main_uri, "version": 2}, "contentChanges": [{"text": edited}]}));
     let comp = c.request(
         "textDocument/completion",
-        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited, "let _z = .Utils.Math.", 21)}),
+        json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited, "let _z = .Util.Math.", 20)}),
     );
     let labels: Vec<&str> = comp["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
-    assert!(labels.contains(&"sqr") && labels.contains(&"lerp") && labels.contains(&"PI"), "{:?}", labels);
-    assert!(!labels.contains(&"private_helper"), "{:?}", labels);
+    assert!(labels.contains(&"sqr") && labels.contains(&"clamp") && labels.contains(&"PI"), "{:?}", labels);
+    assert!(!labels.contains(&"internal_mul"), "{:?}", labels);
 
     // completion at the root: namespaces
     let edited2 = text.replacen("fn main() {", "fn main() {\n    let _z = .;", 1);
     c.notify("textDocument/didChange", json!({"textDocument": {"uri": main_uri, "version": 3}, "contentChanges": [{"text": edited2}]}));
     let comp = c.request("textDocument/completion", json!({"textDocument": {"uri": main_uri}, "position": pos_of(&edited2, "let _z = .", 10)}));
     let labels: Vec<&str> = comp["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
-    assert!(labels.contains(&"Utils") && labels.contains(&"Graphics") && labels.contains(&"main"), "{:?}", labels);
+    assert!(labels.contains(&"Util") && labels.contains(&"Shapes") && labels.contains(&"main"), "{:?}", labels);
 
     // document symbols of a file that was never opened
-    let math = demo.join("utils/math.lrs");
+    let math = demo.join("util/math.lrs");
     let syms = c.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri(&math)}}));
     let names: Vec<&str> = syms.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&".Utils.Math") && names.contains(&"sqr") && names.contains(&"clamp"), "{:?}", names);
+    assert!(names.contains(&".Util.Math") && names.contains(&"sqr") && names.contains(&"clamp"), "{:?}", names);
 
     // diagnostics for a bad include and a bad path
     let broken = format!("include \"missing.lrs\"\n{}\nfn broken() {{ let _ = .Nope.x(); }}\n", text);

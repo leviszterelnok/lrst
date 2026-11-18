@@ -1,0 +1,13 @@
+// namespace Util.Math. The namespace `Util` is shared with util/text.lrs.
+namespace Util.Math {
+    pub const PI: f64 = 3.14159265358979;
+
+    pub fn sqr(x: f64) -> f64 { internal_mul(x, x) }
+
+    pub fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
+        if v < lo { lo } else if v > hi { hi } else { v }
+    }
+
+    // No `pub`: private to this file, other files cannot call it.
+    fn internal_mul(a: f64, b: f64) -> f64 { a * b }
+}
