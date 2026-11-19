@@ -126,6 +126,15 @@ struct RaSession {
     synced: Option<Arc<Analysis>>,
 }
 
+/// Why the generated crate is not written: appended to `$TMP/lrs-debug.log`.
+fn debug_log(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("lrs-debug.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 fn respond(id: Value, result: Value) {
     send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
 }
@@ -376,14 +385,27 @@ impl Server {
     /// Make sure rust-analyzer has the generated crate of `a` (the analysis of the `.lrs` file
     /// at `path`). Returns the project config and the generated file. Loose files have none.
     fn sync_ra(&mut self, path: &Path, a: &Arc<Analysis>) -> Option<(Config, PathBuf)> {
-        let cfg = path.parent().and_then(find_config_dir).and_then(|cd| find_project(&cd).ok())?;
+        let cfg = match path.parent().and_then(find_config_dir).map(|cd| find_project(&cd)) {
+            Some(Ok(c)) => c,
+            Some(Err(e)) => {
+                debug_log(&format!("project for {} failed: {e}", path.display()));
+                return None;
+            }
+            None => {
+                debug_log(&format!("no Cargo.toml [lrs] / lrs.toml above {}", path.display()));
+                return None;
+            }
+        };
         let gen_path = gen_dir(&cfg).join("src").join(if cfg.is_lib { "lib.rs" } else { "main.rs" });
         let synced = self.ra_sessions.get(&cfg.entry).and_then(|s| s.synced.as_ref()).is_some_and(|x| Arc::ptr_eq(x, a));
         if !synced {
             // the text goes to rust-analyzer in memory; the disk copy only has to exist once per session
             // (every disk write would make it reload the file)
             if !self.ra_sessions.contains_key(&cfg.entry) {
-                write_gen(&cfg, &a.emitted.code).ok()?;
+                if let Err(e) = write_gen(&cfg, &a.emitted.code) {
+                    debug_log(&format!("writing the generated crate failed: {e}"));
+                    return None;
+                }
             }
             let root = gen_dir(&cfg);
             let sess = self
