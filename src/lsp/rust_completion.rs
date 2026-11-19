@@ -7,20 +7,55 @@ use super::features;
 use super::ra::{Conn, Ra};
 use crate::driver::Analysis;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Raw rust-analyzer items, kept so `completionItem/resolve` can be forwarded.
-#[derive(Default)]
-pub struct ItemStore {
-    items: Mutex<HashMap<u64, (PathBuf, Value)>>,
-    next: AtomicU64,
+/// One rust-analyzer answer, kept so `completionItem/resolve` can be forwarded
+/// (rust-analyzer returns the `use` edit of an auto-import only on resolve).
+pub struct Response {
+    pub entry: PathBuf,
+    analysis: Arc<Analysis>,
+    fid: usize,
+    raw: Vec<Value>,
 }
 
-const STORE_CAP: usize = 5000;
-const RETRY_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+/// The latest few answers, and the number of the latest request. A request that is no
+/// longer the latest is answered at once without asking rust-analyzer, so typing fast
+/// never leaves a queue of stale requests in front of the one that matters.
+#[derive(Default)]
+pub struct ItemStore {
+    responses: Mutex<VecDeque<(u64, Arc<Response>)>>,
+    latest: AtomicU64,
+}
+
+impl ItemStore {
+    pub fn next_seq(&self) -> u64 {
+        self.latest.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_latest(&self, seq: u64) -> bool {
+        self.latest.load(Ordering::SeqCst) == seq
+    }
+
+    fn put(&self, seq: u64, resp: Arc<Response>) {
+        if let Ok(mut q) = self.responses.lock() {
+            q.push_back((seq, resp));
+            while q.len() > 4 {
+                q.pop_front();
+            }
+        }
+    }
+
+    pub fn get(&self, seq: u64) -> Option<Arc<Response>> {
+        self.responses.lock().ok()?.iter().find(|(s, _)| *s == seq).map(|(_, r)| r.clone())
+    }
+}
+
+/// How long a completion keeps asking while rust-analyzer is still loading the workspace.
+const LOAD_WAIT: Duration = Duration::from_secs(90);
 const COPIED_FIELDS: &[&str] = &[
     "label", "labelDetails", "kind", "tags", "detail", "documentation", "deprecated", "preselect", "sortText",
     "filterText", "insertText", "insertTextFormat", "insertTextMode", "commitCharacters",
@@ -71,28 +106,47 @@ fn gen_offset(code: &str, line: u32, col: u32) -> Option<usize> {
     Some(start + rest.len())
 }
 
-fn map_range(a: &Analysis, fid: usize, code: &str, range: &Value) -> Option<Value> {
-    let pos = |p: &Value| gen_offset(code, p["line"].as_u64()? as u32, p["character"].as_u64()? as u32);
-    let s = pos(&range["start"])?;
-    let e = pos(&range["end"])?;
-    let ls = gen_to_lrs(a, fid, s, false)?;
-    let le = gen_to_lrs(a, fid, e, true)?;
-    if le < ls {
-        return None;
-    }
-    Some(features::lsp_range(&a.project.files[fid], ls, le))
+/// Like `gen_to_lrs`, for a point between two characters (both ends of a span count).
+fn gen_to_lrs_point(a: &Analysis, fid: usize, gen: usize) -> Option<usize> {
+    a.emitted.map.entries.iter().find_map(|e| {
+        (e.linear && e.file == fid && gen >= e.out && gen <= e.out + e.out_len).then(|| e.src + (gen - e.out).min(e.src_len))
+    })
 }
 
-/// An edit that lands in the generated glue above this file's own code (rust-analyzer's
-/// auto-`use` goes there) is placed at the top of the `.lrs` file, where a `use` line belongs.
-fn glue_top(a: &Analysis, fid: usize, code: &str, range: &Value) -> Option<Value> {
-    let s = gen_offset(code, range["start"]["line"].as_u64()? as u32, range["start"]["character"].as_u64()? as u32)?;
-    let first_own = a.emitted.map.entries.iter().filter(|e| e.linear && e.file == fid).map(|e| e.out).min()?;
-    (s < first_own).then(|| features::lsp_range(&a.project.files[fid], 0, 0))
+/// Map an edit range of the generated crate to `.lrs`. With `glue_top`, an insertion into the
+/// generated glue above this file's own code (where rust-analyzer puts an auto-`use`) goes to
+/// the top of the `.lrs` file, which is where a `use` line belongs.
+fn map_range(a: &Analysis, fid: usize, code: &str, range: &Value, glue_top: bool) -> Option<Value> {
+    let pos = |p: &Value| gen_offset(code, p["line"].as_u64()? as u32, p["character"].as_u64()? as u32);
+    let (s, e) = (pos(&range["start"])?, pos(&range["end"])?);
+    let file = &a.project.files[fid];
+    if let (Some(ls), Some(le)) = (gen_to_lrs(a, fid, s, false), gen_to_lrs(a, fid, e, true)) {
+        if ls <= le {
+            return Some(features::lsp_range(file, ls, le));
+        }
+    }
+    if s != e {
+        return None;
+    }
+    let first_own = || a.emitted.map.entries.iter().filter(|x| x.linear && x.file == fid).map(|x| x.out).min();
+    let at = gen_to_lrs_point(a, fid, s).or_else(|| if glue_top && first_own().is_some_and(|f| s <= f) { Some(0) } else { None })?;
+    Some(features::lsp_range(file, at, at))
+}
+
+/// The edits of `additionalTextEdits`, mapped to `.lrs`; those without a place there are dropped.
+fn map_additional(a: &Analysis, fid: usize, code: &str, edits: &Value) -> Vec<Value> {
+    edits
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|e| Some(json!({"range": map_range(a, fid, code, &e["range"], true)?, "newText": e["newText"]})))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Convert one rust-analyzer item into a `.lrs` item. Edits that cannot be mapped are dropped.
-fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, key: u64) -> Value {
+fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, seq: u64, idx: usize) -> Value {
     let mut out = json!({});
     for k in COPIED_FIELDS {
         if let Some(v) = raw.get(*k) {
@@ -101,8 +155,8 @@ fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, key: u64) -> Valu
     }
     if let Some(te) = raw.get("textEdit") {
         let mapped = match te.get("range") {
-            Some(r) => map_range(a, fid, code, r).map(|r| json!({"range": r, "newText": te["newText"]})),
-            None => match (map_range(a, fid, code, &te["insert"]), map_range(a, fid, code, &te["replace"])) {
+            Some(r) => map_range(a, fid, code, r, false).map(|r| json!({"range": r, "newText": te["newText"]})),
+            None => match (map_range(a, fid, code, &te["insert"], false), map_range(a, fid, code, &te["replace"], false)) {
                 (Some(i), Some(r)) => Some(json!({"insert": i, "replace": r, "newText": te["newText"]})),
                 _ => None,
             },
@@ -111,37 +165,12 @@ fn map_item(a: &Analysis, fid: usize, code: &str, raw: &Value, key: u64) -> Valu
             out["textEdit"] = m;
         }
     }
-    if let Some(extra) = raw.get("additionalTextEdits").and_then(Value::as_array) {
-        let edits: Vec<Value> = extra
-            .iter()
-            .filter_map(|e| {
-                let range = map_range(a, fid, code, &e["range"]).or_else(|| glue_top(a, fid, code, &e["range"]))?;
-                Some(json!({"range": range, "newText": e["newText"]}))
-            })
-            .collect();
-        if !edits.is_empty() {
-            out["additionalTextEdits"] = Value::Array(edits);
-        }
+    let extra = map_additional(a, fid, code, &raw["additionalTextEdits"]);
+    if !extra.is_empty() {
+        out["additionalTextEdits"] = Value::Array(extra);
     }
-    out["data"] = json!({"lrs_ra": key});
+    out["data"] = json!({"lrs_ra": {"r": seq, "i": idx}});
     out
-}
-
-impl ItemStore {
-    fn put(&self, entry: &PathBuf, raw: &Value) -> u64 {
-        let key = self.next.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut m) = self.items.lock() {
-            if m.len() >= STORE_CAP {
-                m.clear();
-            }
-            m.insert(key, (entry.clone(), raw.clone()));
-        }
-        key
-    }
-
-    pub fn get(&self, key: u64) -> Option<(PathBuf, Value)> {
-        self.items.lock().ok()?.get(&key).cloned()
-    }
 }
 
 /// Queue a job that makes rust-analyzer see the generated code (`path`, `code`).
@@ -163,55 +192,52 @@ pub fn completion_job(
     gen_path: PathBuf,
     entry: PathBuf,
     store: Arc<ItemStore>,
+    seq: u64,
     id: Value,
 ) {
     ra.run(Box::new(move |conn: Option<&mut Conn>| {
-        let empty = json!({"isIncomplete": false, "items": []});
-        let result = match conn {
-            None => empty,
-            Some(c) => {
-                let code = a.emitted.code.as_str();
-                let (line, col) = gen_position(code, gen_off);
-                let uri = super::path_to_uri(&gen_path);
-                let params = json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": col}});
-                c.wait_warm();
-                let mut reply = c.request("textDocument/completion", params.clone());
-                // still busy (no answer yet): retry briefly, then ask the client to come back
-                let started = std::time::Instant::now();
-                while reply.is_none() && started.elapsed() < RETRY_FOR {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    reply = c.request("textDocument/completion", params.clone());
+        // the client asks again when it sees `isIncomplete`
+        let pending = json!({"isIncomplete": true, "items": []});
+        let result = 'done: {
+            let Some(c) = conn else { break 'done json!({"isIncomplete": false, "items": []}) };
+            let code = a.emitted.code.as_str();
+            let (line, col) = gen_position(code, gen_off);
+            let params = json!({
+                "textDocument": {"uri": super::path_to_uri(&gen_path)},
+                "position": {"line": line, "character": col}
+            });
+            // rust-analyzer answers `null` while it is still loading the workspace: keep asking,
+            // but give up as soon as a newer request exists
+            let deadline = Instant::now() + LOAD_WAIT;
+            let reply = loop {
+                if !store.is_latest(seq) {
+                    break 'done pending;
                 }
-                // LRS_LOG=<file>: keep the raw rust-analyzer answers for debugging
-                if let Some(log) = std::env::var_os("LRS_LOG") {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
-                        let _ = writeln!(f, "{}", reply.as_ref().map_or("null".to_string(), |v| v.to_string()));
-                    }
+                if let Some(v) = c.request("textDocument/completion", params.clone()) {
+                    break v;
                 }
-                match reply {
-                    None => json!({"isIncomplete": true, "items": []}),
-                    Some(v) => {
-                        let (raw_items, incomplete) = match &v {
-                            Value::Array(items) => (items.clone(), false),
-                            _ => (
-                                v["items"].as_array().cloned().unwrap_or_default(),
-                                v["isIncomplete"].as_bool().unwrap_or(false),
-                            ),
-                        };
-                        let items: Vec<Value> = raw_items
-                            .iter()
-                            // the per-file modules of the generated crate are not user names
-                            .filter(|raw| !raw["label"].as_str().unwrap_or("").starts_with("__lrs"))
-                            .map(|raw| {
-                                let key = store.put(&entry, raw);
-                                map_item(&a, fid, code, raw, key)
-                            })
-                            .collect();
-                        json!({"isIncomplete": incomplete, "items": items})
-                    }
+                if c.is_dead() || Instant::now() >= deadline {
+                    break 'done pending;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            };
+            // LRS_LOG=<file>: keep the raw rust-analyzer answers for debugging
+            if let Some(log) = std::env::var_os("LRS_LOG") {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+                    let _ = writeln!(f, "{reply}");
                 }
             }
+            let (raw_items, incomplete) = match &reply {
+                Value::Array(items) => (items.clone(), false),
+                _ => (reply["items"].as_array().cloned().unwrap_or_default(), reply["isIncomplete"].as_bool().unwrap_or(false)),
+            };
+            // the per-file modules of the generated crate are not user names
+            let raw: Vec<Value> =
+                raw_items.into_iter().filter(|r| !r["label"].as_str().unwrap_or("").starts_with("__lrs")).collect();
+            let items: Vec<Value> = raw.iter().enumerate().map(|(i, r)| map_item(&a, fid, code, r, seq, i)).collect();
+            store.put(seq, Arc::new(Response { entry, analysis: a.clone(), fid, raw }));
+            json!({"isIncomplete": incomplete, "items": items})
         };
         super::send(&json!({"jsonrpc": "2.0", "id": id, "result": result}));
     }));
@@ -236,14 +262,22 @@ mod tests {
 }
 
 /// Queue `completionItem/resolve` for a raw rust-analyzer item and send the merged item.
-pub fn resolve_job(ra: &Ra, raw: Value, params: Value, id: Value) {
+pub fn resolve_job(ra: &Ra, resp: Arc<Response>, idx: usize, seq: u64, store: Arc<ItemStore>, params: Value, id: Value) {
     ra.run(Box::new(move |conn: Option<&mut Conn>| {
         let mut out = params;
-        if let Some(c) = conn {
-            if let Some(resolved) = c.request("completionItem/resolve", raw) {
-                for k in ["documentation", "detail"] {
-                    if let Some(v) = resolved.get(k) {
-                        out[k] = v.clone();
+        // a newer completion changed what rust-analyzer sees: the old item can no longer be resolved
+        if store.is_latest(seq) {
+            if let (Some(c), Some(raw)) = (conn, resp.raw.get(idx)) {
+                if let Some(resolved) = c.request("completionItem/resolve", raw.clone()) {
+                    for k in ["documentation", "detail"] {
+                        if let Some(v) = resolved.get(k) {
+                            out[k] = v.clone();
+                        }
+                    }
+                    // the `use` line of an auto-import
+                    let extra = map_additional(&resp.analysis, resp.fid, &resp.analysis.emitted.code, &resolved["additionalTextEdits"]);
+                    if !extra.is_empty() {
+                        out["additionalTextEdits"] = Value::Array(extra);
                     }
                 }
             }

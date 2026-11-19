@@ -10,7 +10,7 @@ mod ra;
 mod rust_completion;
 
 use crate::driver::*;
-use ra::Ra;
+use ra::{Ra, RaCaps};
 use rust_completion::ItemStore;
 use crate::model::*;
 use crate::parse::{normalize, Overlay};
@@ -118,6 +118,7 @@ struct Server {
     /// entry path -> rust-analyzer on its generated crate
     ra_sessions: HashMap<PathBuf, RaSession>,
     store: Arc<ItemStore>,
+    ra_caps: RaCaps,
 }
 
 /// One rust-analyzer instance and the analysis it was last given.
@@ -290,6 +291,13 @@ impl Server {
         let params = &msg["params"];
         match (method.as_str(), id) {
             ("initialize", Some(id)) => {
+                // what the editor can do with completion items is what rust-analyzer is told too
+                let item = &params["capabilities"]["textDocument"]["completion"]["completionItem"];
+                self.ra_caps = RaCaps {
+                    snippets: item["snippetSupport"].as_bool().unwrap_or(false),
+                    label_details: item["labelDetailsSupport"].as_bool().unwrap_or(false),
+                    insert_replace: item["insertReplaceSupport"].as_bool().unwrap_or(false),
+                };
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "capabilities": {
                         "textDocumentSync": {"openClose": true, "change": 1, "save": {"includeText": false}},
@@ -362,6 +370,8 @@ impl Server {
     /// that maps into the generated Rust, rust-analyzer answers (asynchronously).
     fn complete(&mut self, id: Value, params: &Value) {
         let empty = json!({"isIncomplete": false, "items": []});
+        // numbering the requests lets older ones that are still waiting give way to this one
+        let seq = self.store.next_seq();
         let Some(path) = params["textDocument"]["uri"].as_str().and_then(uri_to_path).map(|p| normalize(&p)) else {
             return respond(id, empty);
         };
@@ -379,7 +389,7 @@ impl Server {
         let Some(gen_off) = rust_completion::lrs_to_gen(&a, fid, off) else { return respond(id, empty) };
         let Some((cfg, gen_path)) = self.sync_ra(&path, &a) else { return respond(id, empty) };
         let Some(sess) = self.ra_sessions.get(&cfg.entry) else { return respond(id, empty) };
-        rust_completion::completion_job(&sess.ra, a.clone(), fid, gen_off, gen_path, cfg.entry.clone(), self.store.clone(), id);
+        rust_completion::completion_job(&sess.ra, a.clone(), fid, gen_off, gen_path, cfg.entry.clone(), self.store.clone(), seq, id);
     }
 
     /// Make sure rust-analyzer has the generated crate of `a` (the analysis of the `.lrs` file
@@ -408,10 +418,11 @@ impl Server {
                 }
             }
             let root = gen_dir(&cfg);
+            let caps = self.ra_caps;
             let sess = self
                 .ra_sessions
                 .entry(cfg.entry.clone())
-                .or_insert_with(|| RaSession { ra: Ra::start(root), synced: None });
+                .or_insert_with(|| RaSession { ra: Ra::start(root, caps), synced: None });
             rust_completion::sync_job(&sess.ra, gen_path.clone(), a.emitted.code.clone());
             sess.synced = Some(a.clone());
         }
@@ -419,9 +430,13 @@ impl Server {
     }
 
     fn resolve(&mut self, id: Value, params: &Value) {
-        let found = params["data"]["lrs_ra"].as_u64().and_then(|k| self.store.get(k));
-        match found.and_then(|(entry, raw)| self.ra_sessions.get(&entry).map(|s| (s, raw))) {
-            Some((sess, raw)) => rust_completion::resolve_job(&sess.ra, raw, params.clone(), id),
+        let key = &params["data"]["lrs_ra"];
+        let (seq, idx) = (key["r"].as_u64(), key["i"].as_u64().map(|i| i as usize));
+        let found = seq.and_then(|s| self.store.get(s)).zip(seq).zip(idx);
+        match found.and_then(|((resp, seq), idx)| self.ra_sessions.get(&resp.entry).map(|s| (s, resp, seq, idx))) {
+            Some((sess, resp, seq, idx)) => {
+                rust_completion::resolve_job(&sess.ra, resp, idx, seq, self.store.clone(), params.clone(), id)
+            }
             None => respond(id, params.clone()),
         }
     }
@@ -459,6 +474,7 @@ pub fn run() -> i32 {
         published: HashSet::new(),
         shutdown: false,
         ra_sessions: HashMap::new(),
+        ra_caps: RaCaps::default(),
         store: Arc::new(ItemStore::default()),
     };
     while let Ok(ev) = rx.recv() {

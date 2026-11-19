@@ -173,7 +173,8 @@ vim.lsp.enable("lrs")
   (rustc has the final say), and `macro_rules!` macros are not exported through mounts.
 * Mounts import names, not glob-imported names (`pub use x::*` inside a namespace is not forwarded).
 * The first Rust completion in a project starts rust-analyzer and waits for its initial indexing (can take a while).
-  Edits that rust-analyzer would add elsewhere in the file (auto-`use` in the generated glue) are dropped.
+  Items that are not imported yet (`HashMap`, a crate's types) are offered like in plain Rust, after the
+  first three typed letters (rust-analyzer's own rule); picking one adds its `use` line at the top of the `.lrs` file.
 * Completion inside generated glue (namespace headers, mounts, `.A.b` paths in code) has no Rust answer.
 
 ## TODO

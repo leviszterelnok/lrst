@@ -3,7 +3,7 @@
 //! jobs against it on a worker thread so the main loop never blocks on it.
 
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -19,6 +19,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// and the job must then answer with its fallback.
 pub type Job = Box<dyn FnOnce(Option<&mut Conn>) + Send>;
 
+/// What the editor can do with completion items; it is passed on to rust-analyzer so
+/// it answers exactly as it would to the editor itself.
+#[derive(Clone, Copy, Default)]
+pub struct RaCaps {
+    pub snippets: bool,
+    pub label_details: bool,
+    pub insert_replace: bool,
+}
+
 /// Handle to one worker thread (and so one rust-analyzer process).
 pub struct Ra {
     tx: Sender<Job>,
@@ -26,14 +35,19 @@ pub struct Ra {
 
 impl Ra {
     /// Start a worker for the crate at `root`. Nothing is spawned until the first job.
-    pub fn start(root: PathBuf) -> Ra {
+    pub fn start(root: PathBuf, caps: RaCaps) -> Ra {
         let (tx, rx) = channel::<Job>();
         std::thread::spawn(move || {
             let mut conn: Option<Conn> = None;
             let mut failed = false;
+            let mut restarts = 0;
             for job in rx {
+                if conn.as_ref().is_some_and(Conn::is_dead) && restarts < 3 {
+                    restarts += 1;
+                    conn = None;
+                }
                 if conn.is_none() && !failed {
-                    match find_binary().and_then(|bin| Conn::spawn(&bin, &root)) {
+                    match find_binary().and_then(|bin| Conn::spawn(&bin, &root, caps)) {
                         Ok(c) => conn = Some(c),
                         Err(e) => {
                             eprintln!("lrs: rust-analyzer unavailable: {e}");
@@ -60,21 +74,15 @@ pub struct Conn {
     next_id: i64,
     /// document uri -> last sent version
     versions: HashMap<String, i64>,
-    progress: Arc<Mutex<Progress>>,
-    warmed: bool,
+    dead: bool,
 }
-
-/// rust-analyzer's work-done progress: finished once every token has ended.
-#[derive(Default)]
-struct Progress {
-    seen: bool,
-    open: HashSet<String>,
-}
-
-const WARMUP: Duration = Duration::from_secs(60);
 
 impl Conn {
-    fn spawn(bin: &Path, root: &Path) -> Result<Conn, String> {
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    fn spawn(bin: &Path, root: &Path, caps: RaCaps) -> Result<Conn, String> {
         let mut child = Command::new(bin)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -85,27 +93,10 @@ impl Conn {
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let (tx, responses) = channel::<Value>();
         let reply_stdin = stdin.clone();
-        let progress = Arc::new(Mutex::new(Progress::default()));
-        let reader_progress = progress.clone();
         std::thread::spawn(move || {
             let mut r = BufReader::new(stdout);
             while let Some(msg) = read_message(&mut r) {
                 match (msg.get("id").cloned(), msg.get("method").and_then(Value::as_str)) {
-                    (None, Some("$/progress")) => {
-                        let token = msg["params"]["token"].to_string();
-                        if let Ok(mut p) = reader_progress.lock() {
-                            match msg["params"]["value"]["kind"].as_str() {
-                                Some("begin") => {
-                                    p.open.insert(token);
-                                }
-                                Some("end") => {
-                                    p.open.remove(&token);
-                                    p.seen = true;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
                     // a request from the server: answer it so it never blocks on us
                     (Some(id), Some(method)) => {
                         let result = if method == "workspace/configuration" {
@@ -125,7 +116,7 @@ impl Conn {
                 }
             }
         });
-        let mut conn = Conn { child, stdin, responses, next_id: 1, versions: HashMap::new(), progress, warmed: false };
+        let mut conn = Conn { child, stdin, responses, next_id: 1, versions: HashMap::new(), dead: false };
         let root_uri = crate::lsp::path_to_uri(root);
         conn.request(
             "initialize",
@@ -133,20 +124,27 @@ impl Conn {
                 "processId": null,
                 "rootUri": root_uri,
                 "capabilities": {
-                    // progress reports tell us when the initial indexing is done
-                    "window": {"workDoneProgress": true},
                     "textDocument": {
                         "completion": {
                             "completionItem": {
-                                "snippetSupport": false,
+                                "snippetSupport": caps.snippets,
+                                "labelDetailsSupport": caps.label_details,
+                                "insertReplaceSupport": caps.insert_replace,
                                 "documentationFormat": ["markdown", "plaintext"],
-                                "resolveSupport": {"properties": ["documentation", "detail"]}
+                                // without `additionalTextEdits` rust-analyzer never offers items that
+                                // are not imported yet (HashMap without a `use`), and with it the `use`
+                                // line comes back from completionItem/resolve
+                                "resolveSupport": {"properties": ["documentation", "detail", "additionalTextEdits"]}
                             }
                         }
                     }
                 },
-                // our own rustc diagnostics already cover checking
-                "initializationOptions": {"checkOnSave": false}
+                "initializationOptions": {
+                    // our own rustc diagnostics already cover checking
+                    "checkOnSave": false,
+                    // its own build directory: no waiting on the lock of our cargo runs
+                    "cargo": {"targetDir": true}
+                }
             }),
         )
         .ok_or("rust-analyzer did not answer initialize")?;
@@ -163,26 +161,13 @@ impl Conn {
             match self.responses.recv_timeout(REQUEST_TIMEOUT) {
                 Ok(msg) if msg["id"].as_i64() == Some(id) => return msg.get("result").cloned().filter(|r| !r.is_null()),
                 Ok(_) => continue,
-                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => return None,
-            }
-        }
-    }
-
-    /// The first request waits (up to `WARMUP`) until rust-analyzer finished its initial indexing.
-    pub fn wait_warm(&mut self) {
-        if self.warmed {
-            return;
-        }
-        let end = std::time::Instant::now() + WARMUP;
-        while std::time::Instant::now() < end {
-            if let Ok(p) = self.progress.lock() {
-                if p.seen && p.open.is_empty() {
-                    break;
+                Err(RecvTimeoutError::Timeout) => return None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.dead = true;
+                    return None;
                 }
             }
-            std::thread::sleep(Duration::from_millis(100));
         }
-        self.warmed = true;
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
