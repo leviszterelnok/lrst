@@ -304,6 +304,7 @@ impl Server {
                         "definitionProvider": true,
                         "hoverProvider": true,
                         "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": true},
+                        "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"},
                         "documentSymbolProvider": true
                     },
                     "serverInfo": {"name": "lrs", "version": env!("CARGO_PKG_VERSION")}
@@ -353,6 +354,7 @@ impl Server {
                 }
             }
             ("textDocument/completion", Some(id)) => self.complete(id, params),
+            ("textDocument/onTypeFormatting", Some(id)) => respond(id, self.on_type(params).unwrap_or(json!([]))),
             ("completionItem/resolve", Some(id)) => self.resolve(id, params),
             (m @ ("textDocument/definition" | "textDocument/hover" | "textDocument/documentSymbol"), Some(id)) => {
                 let result = self.query(m, params).unwrap_or(Value::Null);
@@ -364,6 +366,29 @@ impl Server {
             _ => {}
         }
         true
+    }
+
+    /// Enter between `{` and `}`: opens an indented middle line, leaving `}` on its own line.
+    fn on_type(&self, params: &Value) -> Option<Value> {
+        let none = json!([]);
+        if params["ch"].as_str()? != "\n" {
+            return Some(none);
+        }
+        let path = normalize(&uri_to_path(params["textDocument"]["uri"].as_str()?)?);
+        let text = self.docs.get(&path)?;
+        let line = params["position"]["line"].as_u64()? as usize;
+        let col = params["position"]["character"].as_u64()? as usize;
+        let lines: Vec<&str> = text.split('\n').collect();
+        let cur = lines.get(line)?;
+        let prev = lines.get(line.checked_sub(1)?)?;
+        let (before, after) = (cur.get(..col)?, cur.get(col..)?);
+        // only whitespace before the cursor, `}` after it, and `{` ending the previous line
+        if !before.chars().all(|c| c == ' ' || c == '\t') || !after.starts_with('}') || !prev.trim_end().ends_with('{') {
+            return Some(none);
+        }
+        let unit = if before.contains('\t') { "\t" } else { "    " };
+        let pos = json!({"line": line, "character": col});
+        Some(json!([{"range": {"start": pos, "end": pos}, "newText": format!("{unit}\n{before}")}]))
     }
 
     /// Completion: `.lrs` namespace paths come from the namespace tree; everywhere else
