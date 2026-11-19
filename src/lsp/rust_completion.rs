@@ -182,6 +182,13 @@ pub fn completion_job(
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     reply = c.request("textDocument/completion", params.clone());
                 }
+                // LRS_LOG=<file>: keep the raw rust-analyzer answers for debugging
+                if let Some(log) = std::env::var_os("LRS_LOG") {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+                        let _ = writeln!(f, "{}", reply.as_ref().map_or("null".to_string(), |v| v.to_string()));
+                    }
+                }
                 match reply {
                     None => json!({"isIncomplete": true, "items": []}),
                     Some(v) => {

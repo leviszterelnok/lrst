@@ -380,7 +380,11 @@ impl Server {
         let gen_path = gen_dir(&cfg).join("src").join(if cfg.is_lib { "lib.rs" } else { "main.rs" });
         let synced = self.ra_sessions.get(&cfg.entry).and_then(|s| s.synced.as_ref()).is_some_and(|x| Arc::ptr_eq(x, a));
         if !synced {
-            write_gen(&cfg, &a.emitted.code).ok()?;
+            // the text goes to rust-analyzer in memory; the disk copy only has to exist once per session
+            // (every disk write would make it reload the file)
+            if !self.ra_sessions.contains_key(&cfg.entry) {
+                write_gen(&cfg, &a.emitted.code).ok()?;
+            }
             let root = gen_dir(&cfg);
             let sess = self
                 .ra_sessions
