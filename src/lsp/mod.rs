@@ -136,6 +136,29 @@ fn debug_log(msg: &str) {
     }
 }
 
+/// Enter between `{` and `}` (cursor on the `}` line, after the client's own indent).
+/// The middle line takes the `{` line's indent plus one unit; `}` keeps the `{` line's indent.
+/// The unit follows the file: a tab if the file already indents with tabs, otherwise four spaces.
+/// Edits are computed from the text itself, not from the whitespace the client left before the cursor.
+fn braces_enter_edits(text: &str, line: usize, col: usize) -> Option<Value> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let cur = lines.get(line)?;
+    let prev = lines.get(line.checked_sub(1)?)?;
+    let (before, after) = (cur.get(..col)?, cur.get(col..)?);
+    // only whitespace before the cursor, `}` after it, and `{` ending the previous line
+    if !before.chars().all(|c| c == ' ' || c == '\t') || !after.starts_with('}') || !prev.trim_end().ends_with('{') {
+        return None;
+    }
+    let prev_indent: String = prev.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let unit = if prev_indent.contains('\t') || text.lines().any(|l| l.starts_with('\t')) { "\t" } else { "    " };
+    let at = |c: usize| json!({"line": line, "character": c});
+    // replace the cursor's leading whitespace with the middle line's indent, then open the `}` line after the cursor
+    Some(json!([
+        {"range": {"start": at(0), "end": at(col)}, "newText": format!("{prev_indent}{unit}")},
+        {"range": {"start": at(col), "end": at(col)}, "newText": format!("\n{prev_indent}")}
+    ]))
+}
+
 fn respond(id: Value, result: Value) {
     send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
 }
@@ -378,17 +401,7 @@ impl Server {
         let text = self.docs.get(&path)?;
         let line = params["position"]["line"].as_u64()? as usize;
         let col = params["position"]["character"].as_u64()? as usize;
-        let lines: Vec<&str> = text.split('\n').collect();
-        let cur = lines.get(line)?;
-        let prev = lines.get(line.checked_sub(1)?)?;
-        let (before, after) = (cur.get(..col)?, cur.get(col..)?);
-        // only whitespace before the cursor, `}` after it, and `{` ending the previous line
-        if !before.chars().all(|c| c == ' ' || c == '\t') || !after.starts_with('}') || !prev.trim_end().ends_with('{') {
-            return Some(none);
-        }
-        let unit = if before.contains('\t') { "\t" } else { "    " };
-        let pos = json!({"line": line, "character": col});
-        Some(json!([{"range": {"start": pos, "end": pos}, "newText": format!("{unit}\n{before}")}]))
+        Some(braces_enter_edits(text.as_str(), line, col).unwrap_or(none))
     }
 
     /// Completion: `.lrs` namespace paths come from the namespace tree; everywhere else
@@ -526,5 +539,36 @@ mod tests {
         let u = path_to_uri(p);
         assert_eq!(u, "file:///tmp/my%20project/a%20b.lrs");
         assert_eq!(uri_to_path(&u).unwrap(), p);
+    }
+
+    #[test]
+    fn enter_between_braces_indents_middle_line() {
+        // client already put the `}` line at column 0 with the cursor there
+        let text = "pub fn main() {\n}\n";
+        let edits = braces_enter_edits(text, 1, 0).unwrap();
+        assert_eq!(edits[0]["newText"], "    ");
+        assert_eq!(edits[1]["newText"], "\n");
+    }
+
+    #[test]
+    fn enter_between_braces_uses_tabs_when_file_uses_tabs() {
+        let text = "fn f() {\n\tlet x = 1;\n}\n\nfn g() {\n}\n";
+        let edits = braces_enter_edits(text, 5, 0).unwrap();
+        assert_eq!(edits[0]["newText"], "\t");
+        assert_eq!(edits[1]["newText"], "\n");
+    }
+
+    #[test]
+    fn enter_between_braces_keeps_nested_indent() {
+        let text = "impl A {\n    fn f() {\n    }\n}\n";
+        let edits = braces_enter_edits(text, 2, 4).unwrap();
+        assert_eq!(edits[0]["newText"], "        ");
+        assert_eq!(edits[1]["newText"], "\n    ");
+    }
+
+    #[test]
+    fn enter_between_braces_ignores_other_lines() {
+        let text = "let a = 1;\n}\n";
+        assert!(braces_enter_edits(text, 1, 0).is_none());
     }
 }
